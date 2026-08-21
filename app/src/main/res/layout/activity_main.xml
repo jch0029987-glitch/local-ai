@@ -18,30 +18,35 @@
         android:id="@+id/selectButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/select_model_btn" />
+        android:text="@string/select_model_btn"
+        android:layout_marginBottom="16dp" />
 
     <EditText
         android:id="@+id/promptEditText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:hint="Enter your prompt here..."
-        android:paddingTop="24dp"
-        android:paddingBottom="24dp" />
+        android:paddingBottom="16dp" />
 
     <Button
         android:id="@+id/sendButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:enabled="false"
-        android:text="Generate" />
+        android:text="Generate"
+        android:layout_marginBottom="16dp" />
 
-    <TextView
-        android:id="@+id/outputTextView"
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:text=""
-        android:textSize="14sp"
-        android:paddingTop="24dp" />
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/outputTextView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="14sp" />
+    </ScrollView>
 
 </LinearLayout>

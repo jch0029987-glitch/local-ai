@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Local AI App</string>
+    <string name="select_model_btn">Select GGUF Model</string>
+    <string name="model_status_unloaded">No model loaded</string>
+</resources>

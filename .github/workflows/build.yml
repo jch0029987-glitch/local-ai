@@ -25,8 +25,8 @@ jobs:
 
     - name: Generate Gradle Wrapper
       run: |
-        # Generates gradlew dynamically if it's missing from the repository
-        gradle wrapper --gradle-version 8.7
+        # Generates gradlew dynamically with Gradle 8.13 for API 36 compatibility
+        gradle wrapper --gradle-version 8.13
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew

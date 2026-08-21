@@ -5,8 +5,11 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -26,7 +29,7 @@ class MainActivity : AppCompatActivity() {
     private var llamaModel: LlamaModel? = null
     private var modelPath: String? = null
 
-    // File picker launcher for importing local GGUF models
+    // Storage Access Framework file picker for GGUF weights
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { selectedUri ->
             importModelFile(selectedUri)
@@ -34,57 +37,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 1. Enable modern Edge-to-Edge rendering built into AndroidX Activity
+        enableEdgeToEdge()
+        
         super.onCreate(savedInstanceState)
-        setContentView(createProgrammaticLayout())
+        
+        // 2. Inflate from the XML layout file
+        setContentView(R.layout.activity_main)
+
+        // Bind UI elements from activity_main.xml
+        statusTextView = findViewById(R.id.statusTextView)
+        outputTextView = findViewById(R.id.outputTextView)
+        promptEditText = findViewById(R.id.promptEditText)
+        selectButton = findViewById(R.id.selectButton)
+        sendButton = findViewById(R.id.sendButton)
+
+        // 3. Handle system bar padding insets dynamically
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.mainLayout)) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
 
         setupListeners()
     }
 
-    private fun createProgrammaticLayout(): android.view.View {
-        // Simple linear layout container for quick UI construction
-        val layout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-        }
-
-        statusTextView = TextView(this).apply {
-            text = getString(R.string.model_status_unloaded)
-            textSize = 16f
-            setPadding(0, 0, 0, 16)
-        }
-
-        selectButton = Button(this).apply {
-            text = getString(R.string.select_model_btn)
-        }
-
-        promptEditText = EditText(this).apply {
-            hint = "Enter your prompt here..."
-            setPadding(0, 24, 0, 24)
-        }
-
-        sendButton = Button(this).apply {
-            text = "Generate"
-            isEnabled = false
-        }
-
-        outputTextView = TextView(this).apply {
-            text = ""
-            textSize = 14f
-            setPadding(0, 24, 0, 0)
-        }
-
-        layout.addView(statusTextView)
-        layout.addView(selectButton)
-        layout.addView(promptEditText)
-        layout.addView(sendButton)
-        layout.addView(outputTextView)
-
-        return layout
-    }
-
     private fun setupListeners() {
         selectButton.setOnClickListener {
-            // Launch file picker restricted to binary/octet-stream or general files
+            // Launch document picker restricted to valid model binaries/files
             filePickerLauncher.launch(arrayOf("*/*"))
         }
 
@@ -118,7 +98,6 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun loadModelIntoEngine(path: String) {
         try {
-            // Initialize native GGUF model wrapper
             llamaModel = LlamaModel.load(path) {
                 contextSize = 2048
                 threads = 4
@@ -142,7 +121,6 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // Stream tokens back asynchronously
                 llamaModel?.generateStream(prompt)?.collect { token ->
                     withContext(Dispatchers.Main) {
                         outputTextView.append(token)
@@ -163,7 +141,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Clean up native resources when activity is destroyed
         try {
             llamaModel?.close()
         } catch (_: Exception) {}

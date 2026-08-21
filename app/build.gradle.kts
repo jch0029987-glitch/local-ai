@@ -5,12 +5,11 @@ plugins {
 
 android {
     namespace = "com.jeremy.localai"
-    compileSdk = 34
-
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.jeremy.localai"
-        minSdk = 26
-        targetSdk = 34
+        minSdk = 28
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 

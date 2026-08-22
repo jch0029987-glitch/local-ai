@@ -1,38 +1,62 @@
 package com.jeremy.localai
 
 import android.os.Bundle
-import android.widget.Button
-import android.widget.EditText
-import androidx.activity.enableEdgeToEdge
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
-class SettingsActivity : AppCompatActivity() {
+class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_settings)
-
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.settingsLayout)) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
-        }
-
+        
         val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
-        val threadsInput = findViewById<EditText>(R.id.threadsEditText)
-        val tempInput = findViewById<EditText>(R.id.tempEditText)
+        var threads by mutableStateOf(prefs.getInt("threads", 4).toString())
+        var temperature by mutableStateOf(prefs.getFloat("temperature", 0.7f).toString())
 
-        threadsInput.setText(prefs.getInt("threads", 4).toString())
-        tempInput.setText(prefs.getFloat("temperature", 0.7f).toString())
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .windowInsetsPadding(WindowInsets.systemBars)
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("Inference Settings", style = MaterialTheme.typography.titleLarge)
 
-        findViewById<Button>(R.id.saveSettingsButton).setOnClickListener {
-            val threads = threadsInput.text.toString().toIntOrNull() ?: 4
-            val temp = tempInput.text.toString().toFloatOrNull() ?: 0.7f
+                        OutlinedTextField(
+                            value = threads,
+                            onValueChange = { threads = it },
+                            label = { Text("CPU Threads (1-8)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-            prefs.edit().putInt("threads", threads).putFloat("temperature", temp).apply()
-            finish()
+                        OutlinedTextField(
+                            value = temperature,
+                            onValueChange = { temperature = it },
+                            label = { Text("Temperature (0.0 - 1.0)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Button(
+                            onClick = {
+                                val t = threads.toIntOrNull() ?: 4
+                                val temp = temperature.toFloatOrNull() ?: 0.7f
+                                prefs.edit().putInt("threads", t).putFloat("temperature", temp).apply()
+                                finish()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Save & Return")
+                        }
+                    }
+                }
+            }
         }
     }
 }

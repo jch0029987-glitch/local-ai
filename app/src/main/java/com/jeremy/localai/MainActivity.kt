@@ -3,18 +3,24 @@ package com.jeremy.localai
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.enableEdgeToEdge
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.jeremy.localai.db.AppDatabase
 import com.jeremy.localai.db.ChatMessage
+import com.jeremy.localai.db.ChatSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -23,83 +29,82 @@ import org.codeshipping.llamakotlin.LlamaModel
 import java.io.File
 import java.io.FileOutputStream
 
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var statusTextView: TextView
-    private lateinit var outputTextView: TextView
-    private lateinit var promptEditText: EditText
-    private lateinit var selectButton: Button
-    private lateinit var sendButton: Button
-    private lateinit var settingsButton: Button
-    private lateinit var scrollView: ScrollView
+class MainActivity : ComponentActivity() {
 
     private var llamaModel: LlamaModel? = null
     private var modelPath: String? = null
     private val database by lazy { AppDatabase.getDatabase(this) }
+
+    private var statusText by mutableStateOf("Status: Model Unloaded")
+    private var isGenerating by mutableStateOf(false)
+    
+    private var sessionsState = mutableStateOf<List<ChatSession>>(emptyList())
+    private var currentSessionId by mutableStateOf<Long?>(null)
+    private var messagesState = mutableStateOf<List<ChatMessage>>(emptyList())
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { importModelFile(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        statusTextView = findViewById(R.id.statusTextView)
-        outputTextView = findViewById(R.id.outputTextView)
-        promptEditText = findViewById(R.id.promptEditText)
-        selectButton = findViewById(R.id.selectButton)
-        sendButton = findViewById(R.id.sendButton)
-        settingsButton = findViewById(R.id.settingsButton) // Add button to XML if desired
-        scrollView = findViewById(R.id.scrollView)
-
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.mainLayout)) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
+        // Load sessions list
+        lifecycleScope.launch(Dispatchers.IO) {
+            database.chatDao().getAllSessions().collectLatest { sessions ->
+                sessionsState.value = sessions
+                if (currentSessionId == null && sessions.isNotEmpty()) {
+                    currentSessionId = sessions.first().id
+                } else if (currentSessionId == null && sessions.isEmpty()) {
+                    // Create default session if none exist
+                    val newId = database.chatDao().insertSession(ChatSession(title = "New Chat"))
+                    currentSessionId = newId
+                }
+            }
         }
 
-        setupListeners()
-        observeDatabase()
-    }
-
-    private fun setupListeners() {
-        selectButton.setOnClickListener { filePickerLauncher.launch(arrayOf("*/*")) }
-        
-        // Optional: If you add a settings button to activity_main.xml
-        settingsButton.setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
+        // Load messages for current session dynamically
+        lifecycleScope.launch(Dispatchers.IO) {
+            snapshotFlow { currentSessionId }.collectLatest { sessionId ->
+                if (sessionId != null) {
+                    database.chatDao().getMessagesForSession(sessionId).collectLatest { msgs ->
+                        messagesState.value = msgs
+                    }
+                }
+            }
         }
 
-        sendButton.setOnClickListener {
-            val prompt = promptEditText.text.toString()
-            if (prompt.isNotBlank() && llamaModel != null) {
-                promptEditText.setText("")
-                runInferenceWithHistory(prompt)
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    MainScreen(
+                        status = statusText,
+                        sessions = sessionsState.value,
+                        currentSessionId = currentSessionId,
+                        messages = messagesState.value,
+                        isGenerating = isGenerating,
+                        onSelectModel = { filePickerLauncher.launch(arrayOf("*/*")) },
+                        onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
+                        onNewChat = { createNewSession() },
+                        onSelectSession = { currentSessionId = it },
+                        onSendPrompt = { prompt -> runInference(prompt) }
+                    )
+                }
             }
         }
     }
 
-    private fun observeDatabase() {
+    private fun createNewSession() {
         lifecycleScope.launch(Dispatchers.IO) {
-            database.chatDao().getAllMessages().collectLatest { messages ->
-                val sb = StringBuilder()
-                for (msg in messages) {
-                    val label = if (msg.role == "user") "User" else "Assistant"
-                    sb.append("$label: ${msg.content}\n\n")
-                }
-                withContext(Dispatchers.Main) {
-                    outputTextView.text = sb.toString()
-                    scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-                }
+            val newId = database.chatDao().insertSession(ChatSession(title = "Chat ${System.currentTimeMillis().toString().takeLast(4)}"))
+            withContext(Dispatchers.Main) {
+                currentSessionId = newId
             }
         }
     }
 
     private fun importModelFile(uri: Uri) {
-        statusTextView.text = "Importing model file..."
-        selectButton.isEnabled = false
+        statusText = "Importing model file..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val destinationFile = File(filesDir, "imported_model.gguf")
@@ -110,8 +115,7 @@ class MainActivity : AppCompatActivity() {
                 loadModelIntoEngine(modelPath!!)
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    statusTextView.text = "Import failed: ${e.localizedMessage}"
-                    selectButton.isEnabled = true
+                    statusText = "Import failed: ${e.localizedMessage}"
                 }
             }
         }
@@ -123,61 +127,50 @@ class MainActivity : AppCompatActivity() {
 
             val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
             val threads = prefs.getInt("threads", 4)
-            val temperature = prefs.getFloat("temperature", 0.7f)
+            val contextSize = prefs.getInt("context_size", 2048)
 
             llamaModel = LlamaModel.load(path) {
-                contextSize = 2048
+                this.contextSize = contextSize
                 this.threads = threads
-                this.temperature = temperature
             }
             withContext(Dispatchers.Main) {
-                statusTextView.text = "Status: Model Loaded & Ready"
-                sendButton.isEnabled = true
-                selectButton.isEnabled = true
+                statusText = "Status: Model Loaded & Ready"
             }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
-                statusTextView.text = "Engine load error: ${e.localizedMessage}"
-                selectButton.isEnabled = true
+                statusText = "Engine load error: ${e.localizedMessage}"
             }
         }
     }
 
-    private fun runInferenceWithHistory(userInput: String) {
-        sendButton.isEnabled = false
-        statusTextView.text = "Status: Generating response..."
+    private fun runInference(userInput: String) {
+        val sessionId = currentSessionId ?: return
+        if (userInput.isBlank() || llamaModel == null) return
+        
+        isGenerating = true
+        statusText = "Status: Generating response..."
 
         lifecycleScope.launch(Dispatchers.IO) {
-            // 1. Save user prompt to Room DB
-            database.chatDao().insertMessage(ChatMessage(role = "user", content = userInput))
+            database.chatDao().insertMessage(ChatMessage(sessionId = sessionId, role = "user", content = userInput))
 
-            // 2. Build full conversation transcript for Qwen
-            val allMessages = database.chatDao() // We can query a list directly via a non-flow method if desired, or build it
-            // For simplicity, let's construct the prompt payload:
-            val promptBuilder = StringBuilder("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n")
-            
-            // Reconstruct history formatting
-            // (You can write a dao method to get a snapshot list of messages)
+            val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
+            val systemPrompt = prefs.getString("system_prompt", "You are a helpful assistant.")
+
+            val promptBuilder = StringBuilder("<|im_start|>system\n$systemPrompt<|im_end|>\n")
             promptBuilder.append("<|im_start|>user\n$userInput<|im_end|>\n<|im_start|>assistant\n")
 
-            val fullPrompt = promptBuilder.toString()
             val responseBuilder = StringBuilder()
-
             try {
-                llamaModel?.generateStream(fullPrompt)?.collect { token ->
+                llamaModel?.generateStream(promptBuilder.toString())?.collect { token ->
                     responseBuilder.append(token)
-                    withContext(Dispatchers.Main) {
-                        // Live stream previewing can be handled here if preferred
-                    }
                 }
-                // 3. Save completed assistant response to Room DB
-                database.chatDao().insertMessage(ChatMessage(role = "assistant", content = responseBuilder.toString().trim()))
+                database.chatDao().insertMessage(ChatMessage(sessionId = sessionId, role = "assistant", content = responseBuilder.toString().trim()))
             } catch (e: Exception) {
-                database.chatDao().insertMessage(ChatMessage(role = "assistant", content = "Error: ${e.localizedMessage}"))
+                database.chatDao().insertMessage(ChatMessage(sessionId = sessionId, role = "assistant", content = "Error: ${e.localizedMessage}"))
             } finally {
                 withContext(Dispatchers.Main) {
-                    statusTextView.text = "Status: Model Loaded & Ready"
-                    sendButton.isEnabled = true
+                    isGenerating = false
+                    statusText = "Status: Model Loaded & Ready"
                 }
             }
         }
@@ -186,5 +179,145 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         try { llamaModel?.close() } catch (_: Exception) {}
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainScreen(
+    status: String,
+    sessions: List<ChatSession>,
+    currentSessionId: Long?,
+    messages: List<ChatMessage>,
+    isGenerating: Boolean,
+    onSelectModel: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onNewChat: () -> Unit,
+    onSelectSession: (Long) -> Unit,
+    onSendPrompt: (String) -> Unit
+) {
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    var textInput by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Chat History", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+                Button(onClick = onNewChat, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Text("+ New Chat")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Divider()
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    items(sessions) { session ->
+                        NavigationDrawerItem(
+                            label = { Text(session.title) },
+                            selected = session.id == currentSessionId,
+                            onClick = {
+                                onSelectSession(session.id)
+                                scope.launch { drawerState.close() }
+                            },
+                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                        )
+                    }
+                }
+            }
+        }
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Local AI") },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                    }
+                )
+            }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(16.dp)
+            ) {
+                Text(text = status, style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onSelectModel, modifier = Modifier.weight(1f)) {
+                        Text("Select Model")
+                    }
+                    OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
+                        Text("Settings")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(messages) { msg ->
+                        val isUser = msg.role == "user"
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isUser) MaterialTheme.colorScheme.primaryContainer 
+                                                 else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = if (isUser) "You" else "Assistant",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(text = msg.content, style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = textInput,
+                        onValueChange = { textInput = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Type a prompt...") },
+                        maxLines = 3
+                    )
+                    Button(
+                        onClick = {
+                            if (textInput.isNotBlank()) {
+                                onSendPrompt(textInput)
+                                textInput = ""
+                            }
+                        },
+                        enabled = !isGenerating && textInput.isNotBlank()
+                    ) {
+                        Text("Send")
+                    }
+                }
+            }
+        }
     }
 }

@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var promptEditText: EditText
     private lateinit var selectButton: Button
     private lateinit var sendButton: Button
+    private lateinit var scrollView: ScrollView
 
     private var llamaModel: LlamaModel? = null
     private var modelPath: String? = null
@@ -37,12 +39,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 1. Enable modern Edge-to-Edge rendering built into AndroidX Activity
         enableEdgeToEdge()
-        
         super.onCreate(savedInstanceState)
-        
-        // 2. Inflate from the XML layout file
         setContentView(R.layout.activity_main)
 
         // Bind UI elements from activity_main.xml
@@ -51,8 +49,9 @@ class MainActivity : AppCompatActivity() {
         promptEditText = findViewById(R.id.promptEditText)
         selectButton = findViewById(R.id.selectButton)
         sendButton = findViewById(R.id.sendButton)
+        scrollView = findViewById(R.id.scrollView) // Note: wrap your output TextView in a ScrollView in XML if not already done
 
-        // 3. Handle system bar padding insets dynamically
+        // Handle system bar padding insets dynamically
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.mainLayout)) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
@@ -64,7 +63,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupListeners() {
         selectButton.setOnClickListener {
-            // Launch document picker restricted to valid model binaries/files
             filePickerLauncher.launch(arrayOf("*/*"))
         }
 
@@ -72,12 +70,15 @@ class MainActivity : AppCompatActivity() {
             val prompt = promptEditText.text.toString()
             if (prompt.isNotBlank() && llamaModel != null) {
                 runInference(prompt)
+                promptEditText.setText("") // Clear input field after sending
             }
         }
     }
 
     private fun importModelFile(uri: Uri) {
         statusTextView.text = "Importing model file..."
+        selectButton.isEnabled = false
+        
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val destinationFile = File(filesDir, "imported_model.gguf")
@@ -91,6 +92,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     statusTextView.text = "Import failed: ${e.localizedMessage}"
+                    selectButton.isEnabled = true
                 }
             }
         }
@@ -98,32 +100,45 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun loadModelIntoEngine(path: String) {
         try {
+            // Close existing model instance if re-importing
+            try { llamaModel?.close() } catch (_: Exception) {}
+
             llamaModel = LlamaModel.load(path) {
                 contextSize = 2048
                 threads = 4
                 temperature = 0.7f
             }
             withContext(Dispatchers.Main) {
-                statusTextView.text = "Model Loaded Successfully!"
+                statusTextView.text = "Status: Model Loaded & Ready"
                 sendButton.isEnabled = true
+                selectButton.isEnabled = true
             }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
                 statusTextView.text = "Engine load error: ${e.localizedMessage}"
+                selectButton.isEnabled = true
             }
         }
     }
 
-    private fun runInference(prompt: String) {
+    private fun runInference(userInput: String) {
         outputTextView.text = ""
         sendButton.isEnabled = false
-        statusTextView.text = "Generating response..."
+        selectButton.isEnabled = false
+        statusTextView.text = "Status: Generating response..."
+
+        // Wrap input inside Qwen chat format tags so it acts as an assistant conversation
+        val formattedPrompt = "<|im_start|>user\n$userInput<|im_end|>\n<|im_start|>assistant\n"
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                llamaModel?.generateStream(prompt)?.collect { token ->
+                llamaModel?.generateStream(formattedPrompt)?.collect { token ->
                     withContext(Dispatchers.Main) {
                         outputTextView.append(token)
+                        // Auto-scroll down to follow streamed tokens
+                        scrollView.post {
+                            scrollView.fullScroll(ScrollView.FOCUS_DOWN)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -132,8 +147,9 @@ class MainActivity : AppCompatActivity() {
                 }
             } finally {
                 withContext(Dispatchers.Main) {
-                    statusTextView.text = "Model Loaded & Ready"
+                    statusTextView.text = "Status: Model Loaded & Ready"
                     sendButton.isEnabled = true
+                    selectButton.isEnabled = true
                 }
             }
         }

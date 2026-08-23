@@ -43,7 +43,7 @@ jobs:
         echo "storeFile=release-key.jks" >> key.properties
         echo "storePassword=$KEYSTORE_PASSWORD" >> key.properties
         echo "keyPassword=$KEY_PASSWORD" >> key.properties
-        echo "keyAlias=localai-alias" >> key.properties
+        echo "keyAlias=localai-new-alias" >> key.properties
 
     - name: Build Signed Release APK
       run: ./gradlew assembleRelease --no-daemon

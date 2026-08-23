@@ -17,13 +17,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import com.jeremy.localai.db.AppDatabase
 import com.jeremy.localai.db.ChatMessage
 import com.jeremy.localai.db.ChatSession
 import com.jeremy.localai.engine.AiEngine
 import com.jeremy.localai.engine.EngineOptions
-import com.jeremy.localai.engine.HfSearchDialog
 import com.jeremy.localai.engine.LiteRtEngine
+import com.jeremy.localai.ui.ModelHubScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -31,8 +34,6 @@ import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 import java.io.File
 import java.io.FileOutputStream
-import java.net.URL
-import javax.net.ssl.HttpsURLConnection
 
 class MainActivity : ComponentActivity() {
 
@@ -54,7 +55,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Load sessions list reactively
         lifecycleScope.launch(Dispatchers.IO) {
             database.chatDao().getAllSessions().collectLatest { sessions ->
                 sessionsState.value = sessions
@@ -67,7 +67,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Load messages for current session dynamically
         lifecycleScope.launch(Dispatchers.IO) {
             snapshotFlow { currentSessionId }.collectLatest { sessionId ->
                 if (sessionId != null) {
@@ -79,34 +78,41 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            var showHfSearchDialog by remember { mutableStateOf(false) }
+            val navController = rememberNavController()
 
             MaterialTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MainScreen(
-                        status = statusText,
-                        sessions = sessionsState.value,
-                        currentSessionId = currentSessionId,
-                        messages = messagesState.value,
-                        isGenerating = isGenerating,
-                        onSelectModel = { filePickerLauncher.launch(arrayOf("*/*")) },
-                        onBrowseHf = { showHfSearchDialog = true },
-                        onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
-                        onNewChat = { createNewSession() },
-                        onSelectSession = { currentSessionId = it },
-                        onSendPrompt = { prompt -> runInference(prompt) }
-                    )
-
-                    if (showHfSearchDialog) {
-                        HfSearchDialog(
-                            onDismiss = { showHfSearchDialog = false },
-                            onModelSelected = { repoId, fileName ->
-                                downloadModelFromHuggingFace(repoId, fileName)
-                            }
-                        )
+                    NavHost(navController = navController, startDestination = "home") {
+                        composable("home") {
+                            HomeScreen(
+                                status = statusText,
+                                sessions = sessionsState.value,
+                                currentSessionId = currentSessionId,
+                                messages = messagesState.value,
+                                isGenerating = isGenerating,
+                                onSelectModelFile = { filePickerLauncher.launch(arrayOf("*/*")) },
+                                onNavigateToHub = { navController.navigate("modelHub") },
+                                onOpenSettings = { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) },
+                                onNewChat = { createNewSession() },
+                                onSelectSession = { currentSessionId = it },
+                                onSendPrompt = { prompt -> runInference(prompt) }
+                            )
+                        }
+                        composable("modelHub") {
+                            ModelHubScreen(
+                                appFilesDir = filesDir,
+                                onBack = { navController.popBackStack() },
+                                onModelReady = { path, isLiteRt ->
+                                    modelPath = path
+                                    lifecycleScope.launch(Dispatchers.IO) {
+                                        loadEngine(path, isLiteRt)
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -130,73 +136,17 @@ class MainActivity : ComponentActivity() {
                 val pathString = uri.toString()
                 val isLiteRt = pathString.endsWith(".litertlm", ignoreCase = true) || 
                                pathString.endsWith(".tflite", ignoreCase = true)
-                
-                val fileName = if (isLiteRt) "imported_model.litertlm" else "imported_model.gguf"
+                val fileName = if (isLiteRt) "imported_${System.currentTimeMillis()}.litertlm" else "imported_${System.currentTimeMillis()}.gguf"
                 val destinationFile = File(filesDir, fileName)
                 
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(destinationFile).use { output -> input.copyTo(output) }
                 }
                 modelPath = destinationFile.absolutePath
-
                 loadEngine(modelPath!!, isLiteRt)
-
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     statusText = "Load failed: ${e.localizedMessage}"
-                }
-            }
-        }
-    }
-
-    private fun downloadModelFromHuggingFace(repoId: String, targetFileName: String) {
-        statusText = "Connecting to Hugging Face..."
-        isGenerating = true
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val urlString = "https://huggingface.co/$repoId/resolve/main/$targetFileName"
-                val url = URL(urlString)
-                val connection = url.openConnection() as HttpsURLConnection
-                connection.connect()
-
-                val fileLength = connection.contentLength
-                val destinationFile = File(filesDir, "hf_${System.currentTimeMillis()}.litertlm")
-
-                connection.inputStream.use { input ->
-                    destinationFile.outputStream().use { output ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead: Int
-                        var totalBytesRead = 0L
-
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            totalBytesRead += bytesRead
-                            if (fileLength > 0) {
-                                val percent = (totalBytesRead * 100) / fileLength
-                                withContext(Dispatchers.Main) {
-                                    statusText = "Downloading: $percent% ($totalBytesRead / $fileLength bytes)"
-                                }
-                            }
-                        }
-                    }
-                }
-
-                modelPath = destinationFile.absolutePath
-                withContext(Dispatchers.Main) {
-                    statusText = "Download complete! Initializing LiteRT-LM..."
-                }
-
-                loadEngine(modelPath!!, isLiteRt = true)
-
-                withContext(Dispatchers.Main) {
-                    isGenerating = false
-                }
-
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    statusText = "Download failed: ${e.localizedMessage}"
-                    isGenerating = false
                 }
             }
         }
@@ -210,7 +160,6 @@ class MainActivity : ComponentActivity() {
             temperature = prefs.getFloat("temperature", 0.7f)
         )
 
-        // Close existing engine cleanly
         try { currentEngine?.close() } catch (_: Exception) {}
 
         if (isLiteRt) {
@@ -235,7 +184,6 @@ class MainActivity : ComponentActivity() {
                 }
                 override fun close() { model?.close() }
             }
-
             val ggufEngine = GgufEngineWrapper()
             ggufEngine.loadModel(path, options)
             currentEngine = ggufEngine
@@ -285,14 +233,14 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(
+fun HomeScreen(
     status: String,
     sessions: List<ChatSession>,
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
-    onSelectModel: () -> Unit,
-    onBrowseHf: () -> Unit,
+    onSelectModelFile: () -> Unit,
+    onNavigateToHub: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
@@ -339,7 +287,7 @@ fun MainScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Local AI") },
+                    title = { Text("Local AI Chat") },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(Icons.Default.Menu, contentDescription = "Menu")
@@ -354,15 +302,15 @@ fun MainScreen(
                     .padding(paddingValues)
                     .padding(16.dp)
             ) {
-                Text(text = status, style = MaterialTheme.typography.bodyMedium)
+                Text(text = status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onSelectModel, modifier = Modifier.weight(1f)) {
-                        Text("Select Local")
+                    Button(onClick = onNavigateToHub, modifier = Modifier.weight(1f)) {
+                        Text("Model Hub")
                     }
-                    Button(onClick = onBrowseHf, modifier = Modifier.weight(1f)) {
-                        Text("Browse HF")
+                    OutlinedButton(onClick = onSelectModelFile, modifier = Modifier.weight(1f)) {
+                        Text("Import File")
                     }
                     OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
                         Text("Settings")

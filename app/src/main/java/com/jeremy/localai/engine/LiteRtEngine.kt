@@ -1,53 +1,45 @@
 package com.jeremy.localai.engine
 
 import android.content.Context
-import com.google.ai.edge.litertlm.*
-import kotlinx.coroutines.channels.awaitClose
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flow
 
 class LiteRtEngine(private val context: Context) : AiEngine {
+
     private var engine: Engine? = null
     private var conversation: Conversation? = null
 
     override suspend fun loadModel(path: String, options: EngineOptions) {
-        try {
-            conversation?.close()
-            engine?.close()
-        } catch (_: Exception) {}
-
-        // Configure LiteRT-LM Engine parameters
         val config = EngineConfig(
             modelPath = path,
-            maxNumTokens = options.contextSize
+            backend = Backend.CPU,
+            cacheDir = context.cacheDir.absolutePath
         )
-
-        val createdEngine = Engine(config)
-        createdEngine.initialize()
-        
-        engine = createdEngine
-        conversation = createdEngine.createConversation()
+        val loadedEngine = Engine(config)
+        loadedEngine.initialize()
+        engine = loadedEngine
+        conversation = loadedEngine.createConversation()
     }
 
-    override fun generateStream(prompt: String): Flow<String> = callbackFlow {
-        val activeConv = conversation ?: throw IllegalStateException("LiteRT-LM conversation not initialized")
-        
-        try {
-            // Send message asynchronously and stream token chunks back
-            activeConv.sendMessageAsync(prompt).collect { tokenChunk ->
-                trySend(tokenChunk)
-            }
-        } catch (e: Exception) {
-            trySend("\nError: ${e.localizedMessage}")
-        } finally {
-            close()
-        }
+    override fun generateStream(prompt: String): Flow<String> = flow {
+        val activeConv = conversation ?: throw IllegalStateException("LiteRT-LM Conversation not initialized")
+        val response = activeConv.sendMessage(Message.of(prompt))
+        emit(response.toString())
     }
 
     override fun close() {
         try {
             conversation?.close()
+        } catch (_: Exception) {}
+        try {
             engine?.close()
         } catch (_: Exception) {}
+        conversation = null
+        engine = null
     }
 }

@@ -2,16 +2,14 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
+    - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Set up JDK 17
@@ -20,22 +18,28 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v4
-
-    - name: Generate Gradle Wrapper
-      run: |
-        # Generates gradlew dynamically with Gradle 8.13 for API 36 compatibility
-        gradle wrapper --gradle-version 8.12.1
-
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug --no-daemon
+    # --- INJECTS SECURE KEYSTORE FROM GITHUB SECRETS ---
+    - name: Restore Keystore and Properties
+      env:
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      run: |
+        echo $KEYSTORE_BASE64 | base64 --decode > release-key.jks
+        
+        echo "storeFile=release-key.jks" >> key.properties
+        echo "storePassword=$KEYSTORE_PASSWORD" >> key.properties
+        echo "keyPassword=$KEY_PASSWORD" >> key.properties
+        echo "keyAlias=localai-alias" >> key.properties
 
-    - name: Upload APK Artifact
+    - name: Build Signed Release APK
+      run: ./gradlew assembleRelease
+
+    - name: Upload Signed APK
       uses: actions/upload-artifact@v4
       with:
-        name: app-debug-apk
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: app-release
+        path: app/build/outputs/apk/release/app-release.apk

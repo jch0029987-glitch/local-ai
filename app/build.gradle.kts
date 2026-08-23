@@ -73,4 +73,10 @@ dependencies {
 
     // Local GGUF Native Inference Wrapper
     implementation("org.codeshipping:llama-kotlin-android:0.1.0")
+        // Google AI Edge LiteRT Core & CompiledModel Runtime
+    implementation("com.google.ai.edge.litert:litert:2.2.0")
+
+    // LiteRT-LM (Language Model runtime for .litertlm / generative tasks)
+    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+
 }

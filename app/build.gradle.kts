@@ -85,4 +85,11 @@ dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+implementation("androidx.navigation:navigation-compose:2.7.7")
+
+    // Material Icons Extended (for Download, FolderOpen, etc.)
+    implementation("androidx.compose.material:material-icons-extended:1.6.8")
+
+
 }

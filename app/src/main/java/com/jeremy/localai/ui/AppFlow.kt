@@ -1,25 +1,6 @@
 package com.jeremy.localai.ui
 
 import android.content.Context
-content class AppPreferences(context: Context) {
-    private val prefs = context.getSharedPreferences("local_ai_prefs", Context.MODE_PRIVATE)
-
-    var hasSeenOnboarding: Boolean
-        get() = prefs.getBoolean("has_seen_onboarding", false)
-        set(value) = prefs.edit().putBoolean("has_seen_onboarding", value).apply()
-
-    var useOfflineMode: Boolean
-        get() = prefs.getBoolean("use_offline_mode", true)
-        set(value) = prefs.edit().putBoolean("use_offline_mode", value).apply()
-        
-    var selectedModelUrl: String
-        get() = prefs.getString("selected_model_url", "https://huggingface.co/example/model.gguf") ?: ""
-        set(value) = prefs.edit().putString("selected_model_url", value).apply()
-}
-
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -42,15 +23,20 @@ import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-class FullIntroActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                AppRootNavigation()
-            }
-        }
-    }
+class AppPreferences(context: Context) {
+    private val prefs = context.getSharedPreferences("local_ai_prefs", Context.MODE_PRIVATE)
+
+    var hasSeenOnboarding: Boolean
+        get() = prefs.getBoolean("has_seen_onboarding", false)
+        set(value) = prefs.edit().putBoolean("has_seen_onboarding", value).apply()
+
+    var useOfflineMode: Boolean
+        get() = prefs.getBoolean("use_offline_mode", true)
+        set(value) = prefs.edit().putBoolean("use_offline_mode", value).apply()
+        
+    var selectedModelUrl: String
+        get() = prefs.getString("selected_model_url", "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf") ?: ""
+        set(value) = prefs.edit().putString("selected_model_url", value).apply()
 }
 
 sealed class AppScreen(val route: String) {
@@ -94,20 +80,32 @@ fun AppRootNavigation() {
             )
         }
         composable(AppScreen.MainHub.route) {
-            // Drop your actual ModelHub/Chat Screen here
             Surface(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(16.dp)
+                    ) {
                         Text(
-                            text = "Welcome to LocalAI Hub!", 
-                            style = MaterialTheme.typography.headlineMedium
+                            text = "LocalAI Main Hub", 
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = if (prefs.useOfflineMode) "Mode: 100% Local Inference" else "Mode: Connected Model Fetcher Enabled",
+                            text = if (prefs.useOfflineMode) "Mode: Local Storage (Offline)" else "Mode: Web Download Active",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
+                        if (!prefs.useOfflineMode) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Target: ${prefs.selectedModelUrl}",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
                     }
                 }
             }
@@ -273,7 +271,7 @@ fun SetupConfigurationPageView(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "Pure Offline Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(text = "I will manually place my GGUF files in app storage.", style = MaterialTheme.typography.bodySmall)
+                    Text(text = "I will manually manage my local GGUF/LiteRT files.", style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = useOffline, onCheckedChange = onOfflineChanged)
             }
@@ -292,7 +290,7 @@ fun SetupConfigurationPageView(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "The app will attempt to stream and cache this weights file on startup.",
+                text = "The app will fetch weights from this link if they are missing locally.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -303,7 +301,7 @@ fun SetupConfigurationPageView(
 @Composable
 fun SplashScreen(onLoadingFinished: () -> Unit) {
     LaunchedEffect(Unit) {
-        delay(1800L) // Simulating native tensor / local library initialization
+        delay(1800L)
         onLoadingFinished()
     }
 

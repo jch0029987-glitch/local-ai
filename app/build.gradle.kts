@@ -37,16 +37,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
     
-    kotlinOptions {
-        jvmTarget = "21"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        }
     }
 
     buildFeatures {
         compose = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
     }
 }
 
@@ -74,10 +72,10 @@ dependencies {
 
     // Local GGUF Native Inference Wrapper
     implementation("org.codeshipping:llama-kotlin-android:0.1.0")
-        // Google AI Edge LiteRT Core & CompiledModel Runtime
+    
+    // Google AI Edge LiteRT Core & CompiledModel Runtime
     implementation("com.google.ai.edge.litert:litert:2.2.0")
 
     // LiteRT-LM (Language Model runtime for .litertlm / generative tasks)
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
-
 }

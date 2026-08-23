@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import java.io.File
 
-class LiteRtEngine(private val context: Context) {
+class LiteRtEngine(private val context: Context) : AiEngine {
 
     private var engine: Engine? = null
     private var conversation: Conversation? = null
@@ -22,21 +22,17 @@ class LiteRtEngine(private val context: Context) {
         private const val TAG = "LiteRtEngine"
     }
 
-    /**
-     * Initializes the LiteRT-LM engine using a hardware backend fallback strategy.
-     * Attempts GPU acceleration first, falling back to CPU if necessary.
-     */
-    fun initialize(modelPath: String) {
-        val modelFile = File(modelPath)
+    override suspend fun loadModel(path: String, options: EngineOptions) {
+        val modelFile = File(path)
         if (!modelFile.exists()) {
-            throw IllegalArgumentException("Model file not found at path: $modelPath")
+            throw IllegalArgumentException("Model file not found at path: $path")
         }
 
         val cacheDirectory = context.cacheDir.absolutePath
 
         // 1. Attempt GPU Acceleration configuration
         var activeConfig = EngineConfig(
-            modelPath = modelPath,
+            modelPath = path,
             backend = Backend.GPU(),
             cacheDir = cacheDirectory
         )
@@ -52,7 +48,7 @@ class LiteRtEngine(private val context: Context) {
             // 2. Fallback to CPU Backend if GPU fails
             try {
                 activeConfig = EngineConfig(
-                    modelPath = modelPath,
+                    modelPath = path,
                     backend = Backend.CPU(),
                     cacheDir = cacheDirectory
                 )
@@ -65,26 +61,20 @@ class LiteRtEngine(private val context: Context) {
             }
         }
 
-        // Create the active conversation session
+        // Create active chat session/conversation
         conversation = engine?.createConversation()
     }
 
-    /**
-     * Streams the generated model response chunks as Message flows.
-     */
-    fun generateResponseStream(prompt: String): Flow<Message> = flow {
-        val activeConversation = conversation ?: throw IllegalStateException("Engine or Conversation is not initialized. Call initialize() first.")
+    override fun generateStream(prompt: String): Flow<String> = flow {
+        val activeConversation = conversation ?: throw IllegalStateException("Engine or Conversation is not initialized. Call loadModel() first.")
         
-        // Stream message chunks asynchronously using the correct SDK method
+        // Stream text chunks asynchronously and emit individual token strings
         activeConversation.sendMessageAsync(Message(prompt)).collect { messageChunk ->
-            emit(messageChunk)
+            emit(messageChunk.text ?: "")
         }
     }.flowOn(Dispatchers.IO)
 
-    /**
-     * Releases underlying native resources safely.
-     */
-    fun close() {
+    override fun close() {
         try {
             conversation?.close()
             conversation = null

@@ -22,11 +22,12 @@ class LiteRtEngine(private val context: Context) {
     }
 
     /**
-     * Initializes the LiteRT-LM engine using an intelligent hardware backend cascade.
-     * Tries GPU acceleration first, then gracefully falls back to CPU if necessary.
+     * Initializes the LiteRT-LM engine using a hardware backend fallback strategy.
+     * Attempts GPU acceleration first, falling back to CPU if necessary.
      */
     fun initialize(modelPath: String) {
-        if (!File(modelPath).exists()) {
+        val modelFile = File(modelPath)
+        if (!modelFile.exists()) {
             throw IllegalArgumentException("Model file not found at path: $modelPath")
         }
 
@@ -63,19 +64,19 @@ class LiteRtEngine(private val context: Context) {
             }
         }
 
-        // Create the active chat session/conversation object
-        conversation = engine?.createSession()
+        // Create the active conversation session using correct API
+        conversation = engine?.createConversation()
     }
 
     /**
-     * Streams the generated model response token by token using Kotlin Flows.
+     * Streams the generated model response token by token using Kotlin Flows and sendMessageAsync.
      */
     fun generateResponseStream(prompt: String): Flow<String> = flow {
         val activeConversation = conversation ?: throw IllegalStateException("Engine or Conversation is not initialized. Call initialize() first.")
         
-        // Stream content generation chunks directly from the active session
-        activeConversation.generateContentStream(prompt).collect { chunk ->
-            emit(chunk.text ?: "")
+        // Stream text response chunks asynchronously
+        activeConversation.sendMessageAsync(prompt).collect { chunk ->
+            emit(chunk)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -84,6 +85,7 @@ class LiteRtEngine(private val context: Context) {
      */
     fun close() {
         try {
+            conversation?.close()
             conversation = null
             engine?.close()
             engine = null

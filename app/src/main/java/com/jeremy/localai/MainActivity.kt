@@ -22,6 +22,7 @@ import com.jeremy.localai.db.ChatMessage
 import com.jeremy.localai.db.ChatSession
 import com.jeremy.localai.engine.AiEngine
 import com.jeremy.localai.engine.EngineOptions
+import com.jeremy.localai.engine.HfSearchDialog
 import com.jeremy.localai.engine.LiteRtEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -30,6 +31,8 @@ import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 import java.io.File
 import java.io.FileOutputStream
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 
 class MainActivity : ComponentActivity() {
 
@@ -76,6 +79,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            var showHfSearchDialog by remember { mutableStateOf(false) }
+
             MaterialTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -88,11 +93,21 @@ class MainActivity : ComponentActivity() {
                         messages = messagesState.value,
                         isGenerating = isGenerating,
                         onSelectModel = { filePickerLauncher.launch(arrayOf("*/*")) },
+                        onBrowseHf = { showHfSearchDialog = true },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
                         onSendPrompt = { prompt -> runInference(prompt) }
                     )
+
+                    if (showHfSearchDialog) {
+                        HfSearchDialog(
+                            onDismiss = { showHfSearchDialog = false },
+                            onModelSelected = { repoId, fileName ->
+                                downloadModelFromHuggingFace(repoId, fileName)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -124,51 +139,107 @@ class MainActivity : ComponentActivity() {
                 }
                 modelPath = destinationFile.absolutePath
 
-                val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
-                val options = EngineOptions(
-                    threads = prefs.getInt("threads", 4),
-                    contextSize = prefs.getInt("context_size", 2048),
-                    temperature = prefs.getFloat("temperature", 0.7f)
-                )
-
-                // Close existing engine cleanly
-                try { currentEngine?.close() } catch (_: Exception) {}
-
-                if (isLiteRt) {
-                    withContext(Dispatchers.Main) { statusText = "Loading LiteRT-LM Engine..." }
-                    val liteRtEngine = LiteRtEngine(this@MainActivity)
-                    liteRtEngine.loadModel(modelPath!!, options)
-                    currentEngine = liteRtEngine
-                    withContext(Dispatchers.Main) { statusText = "Status: LiteRT-LM Ready" }
-                } else {
-                    withContext(Dispatchers.Main) { statusText = "Loading GGUF Engine..." }
-                    // Wrap existing LlamaModel into AiEngine interface inline
-                    class GgufEngineWrapper : AiEngine {
-                        private var model: LlamaModel? = null
-                        override suspend fun loadModel(path: String, options: EngineOptions) {
-                            model = LlamaModel.load(path) {
-                                contextSize = options.contextSize
-                                threads = options.threads
-                                temperature = options.temperature
-                            }
-                        }
-                        override fun generateStream(prompt: String) = kotlinx.coroutines.flow.flow {
-                            model?.generateStream(prompt)?.collect { token -> emit(token) }
-                        }
-                        override fun close() { model?.close() }
-                    }
-
-                    val ggufEngine = GgufEngineWrapper()
-                    ggufEngine.loadModel(modelPath!!, options)
-                    currentEngine = ggufEngine
-                    withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
-                }
+                loadEngine(modelPath!!, isLiteRt)
 
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     statusText = "Load failed: ${e.localizedMessage}"
                 }
             }
+        }
+    }
+
+    private fun downloadModelFromHuggingFace(repoId: String, targetFileName: String) {
+        statusText = "Connecting to Hugging Face..."
+        isGenerating = true
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val urlString = "https://huggingface.co/$repoId/resolve/main/$targetFileName"
+                val url = URL(urlString)
+                val connection = url.openConnection() as HttpsURLConnection
+                connection.connect()
+
+                val fileLength = connection.contentLength
+                val destinationFile = File(filesDir, "hf_${System.currentTimeMillis()}.litertlm")
+
+                connection.inputStream.use { input ->
+                    destinationFile.outputStream().use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var totalBytesRead = 0L
+
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                            totalBytesRead += bytesRead
+                            if (fileLength > 0) {
+                                val percent = (totalBytesRead * 100) / fileLength
+                                withContext(Dispatchers.Main) {
+                                    statusText = "Downloading: $percent% ($totalBytesRead / $fileLength bytes)"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                modelPath = destinationFile.absolutePath
+                withContext(Dispatchers.Main) {
+                    statusText = "Download complete! Initializing LiteRT-LM..."
+                }
+
+                loadEngine(modelPath!!, isLiteRt = true)
+
+                withContext(Dispatchers.Main) {
+                    isGenerating = false
+                }
+
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    statusText = "Download failed: ${e.localizedMessage}"
+                    isGenerating = false
+                }
+            }
+        }
+    }
+
+    private suspend fun loadEngine(path: String, isLiteRt: Boolean) {
+        val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
+        val options = EngineOptions(
+            threads = prefs.getInt("threads", 4),
+            contextSize = prefs.getInt("context_size", 2048),
+            temperature = prefs.getFloat("temperature", 0.7f)
+        )
+
+        // Close existing engine cleanly
+        try { currentEngine?.close() } catch (_: Exception) {}
+
+        if (isLiteRt) {
+            withContext(Dispatchers.Main) { statusText = "Loading LiteRT-LM Engine..." }
+            val liteRtEngine = LiteRtEngine(this@MainActivity)
+            liteRtEngine.loadModel(path, options)
+            currentEngine = liteRtEngine
+            withContext(Dispatchers.Main) { statusText = "Status: LiteRT-LM Ready" }
+        } else {
+            withContext(Dispatchers.Main) { statusText = "Loading GGUF Engine..." }
+            class GgufEngineWrapper : AiEngine {
+                private var model: LlamaModel? = null
+                override suspend fun loadModel(path: String, options: EngineOptions) {
+                    model = LlamaModel.load(path) {
+                        contextSize = options.contextSize
+                        threads = options.threads
+                        temperature = options.temperature
+                    }
+                }
+                override fun generateStream(prompt: String) = kotlinx.coroutines.flow.flow {
+                    model?.generateStream(prompt)?.collect { token -> emit(token) }
+                }
+                override fun close() { model?.close() }
+            }
+
+            val ggufEngine = GgufEngineWrapper()
+            ggufEngine.loadModel(path, options)
+            currentEngine = ggufEngine
+            withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
         }
     }
 
@@ -221,6 +292,7 @@ fun MainScreen(
     messages: List<ChatMessage>,
     isGenerating: Boolean,
     onSelectModel: () -> Unit,
+    onBrowseHf: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
@@ -287,7 +359,10 @@ fun MainScreen(
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = onSelectModel, modifier = Modifier.weight(1f)) {
-                        Text("Select Model")
+                        Text("Select Local")
+                    }
+                    Button(onClick = onBrowseHf, modifier = Modifier.weight(1f)) {
+                        Text("Browse HF")
                     }
                     OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
                         Text("Settings")

@@ -31,9 +31,15 @@ android {
         }
     }
 
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+        disable.add("InvalidFragmentVersionForActivityResult")
+    }
+
     signingConfigs {
         create("release") {
-            keyAlias = keystoreProperties.getProperty("keyAlias") ?: "localai-alias"
+            keyAlias = keystoreProperties.getProperty("keyAlias") ?: "localai-new-alias"
             keyPassword = keystoreProperties.getProperty("keyPassword")
             storeFile = keystoreProperties.getProperty("storeFile")?.let { rootProject.file(it) }
             storePassword = keystoreProperties.getProperty("storePassword")

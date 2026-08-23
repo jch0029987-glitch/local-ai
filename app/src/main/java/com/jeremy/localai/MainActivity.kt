@@ -6,7 +6,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +20,9 @@ import androidx.lifecycle.lifecycleScope
 import com.jeremy.localai.db.AppDatabase
 import com.jeremy.localai.db.ChatMessage
 import com.jeremy.localai.db.ChatSession
+import com.jeremy.localai.engine.AiEngine
+import com.jeremy.localai.engine.EngineOptions
+import com.jeremy.localai.engine.LiteRtEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -31,7 +33,7 @@ import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
 
-    private var llamaModel: LlamaModel? = null
+    private var currentEngine: AiEngine? = null
     private var modelPath: String? = null
     private val database by lazy { AppDatabase.getDatabase(this) }
 
@@ -49,14 +51,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Load sessions list
+        // Load sessions list reactively
         lifecycleScope.launch(Dispatchers.IO) {
             database.chatDao().getAllSessions().collectLatest { sessions ->
                 sessionsState.value = sessions
                 if (currentSessionId == null && sessions.isNotEmpty()) {
                     currentSessionId = sessions.first().id
                 } else if (currentSessionId == null && sessions.isEmpty()) {
-                    // Create default session if none exist
                     val newId = database.chatDao().insertSession(ChatSession(title = "New Chat"))
                     currentSessionId = newId
                 }
@@ -76,7 +77,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
                     MainScreen(
                         status = statusText,
                         sessions = sessionsState.value,
@@ -96,7 +100,8 @@ class MainActivity : ComponentActivity() {
 
     private fun createNewSession() {
         lifecycleScope.launch(Dispatchers.IO) {
-            val newId = database.chatDao().insertSession(ChatSession(title = "Chat ${System.currentTimeMillis().toString().takeLast(4)}"))
+            val titleText = "Chat ${System.currentTimeMillis().toString().takeLast(4)}"
+            val newId = database.chatDao().insertSession(ChatSession(title = titleText))
             withContext(Dispatchers.Main) {
                 currentSessionId = newId
             }
@@ -107,45 +112,70 @@ class MainActivity : ComponentActivity() {
         statusText = "Importing model file..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val destinationFile = File(filesDir, "imported_model.gguf")
+                val pathString = uri.toString()
+                val isLiteRt = pathString.endsWith(".litertlm", ignoreCase = true) || 
+                               pathString.endsWith(".tflite", ignoreCase = true)
+                
+                val fileName = if (isLiteRt) "imported_model.litertlm" else "imported_model.gguf"
+                val destinationFile = File(filesDir, fileName)
+                
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(destinationFile).use { output -> input.copyTo(output) }
                 }
                 modelPath = destinationFile.absolutePath
-                loadModelIntoEngine(modelPath!!)
+
+                val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
+                val options = EngineOptions(
+                    threads = prefs.getInt("threads", 4),
+                    contextSize = prefs.getInt("context_size", 2048),
+                    temperature = prefs.getFloat("temperature", 0.7f)
+                )
+
+                // Close existing engine cleanly
+                try { currentEngine?.close() } catch (_: Exception) {}
+
+                if (isLiteRt) {
+                    withContext(Dispatchers.Main) { statusText = "Loading LiteRT-LM Engine..." }
+                    val liteRtEngine = LiteRtEngine(this@MainActivity)
+                    liteRtEngine.loadModel(modelPath!!, options)
+                    currentEngine = liteRtEngine
+                    withContext(Dispatchers.Main) { statusText = "Status: LiteRT-LM Ready" }
+                } else {
+                    withContext(Dispatchers.Main) { statusText = "Loading GGUF Engine..." }
+                    // Wrap existing LlamaModel into AiEngine interface inline
+                    class GgufEngineWrapper : AiEngine {
+                        private var model: LlamaModel? = null
+                        override suspend fun loadModel(path: String, options: EngineOptions) {
+                            model = LlamaModel.load(path) {
+                                contextSize = options.contextSize
+                                threads = options.threads
+                                temperature = options.temperature
+                            }
+                        }
+                        override fun generateStream(prompt: String) = kotlinx.coroutines.flow.flow {
+                            model?.generateStream(prompt)?.collect { token -> emit(token) }
+                        }
+                        override fun close() { model?.close() }
+                    }
+
+                    val ggufEngine = GgufEngineWrapper()
+                    ggufEngine.loadModel(modelPath!!, options)
+                    currentEngine = ggufEngine
+                    withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
+                }
+
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    statusText = "Import failed: ${e.localizedMessage}"
+                    statusText = "Load failed: ${e.localizedMessage}"
                 }
-            }
-        }
-    }
-
-    private suspend fun loadModelIntoEngine(path: String) {
-        try {
-            try { llamaModel?.close() } catch (_: Exception) {}
-
-            val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
-            val threads = prefs.getInt("threads", 4)
-            val contextSize = prefs.getInt("context_size", 2048)
-
-            llamaModel = LlamaModel.load(path) {
-                this.contextSize = contextSize
-                this.threads = threads
-            }
-            withContext(Dispatchers.Main) {
-                statusText = "Status: Model Loaded & Ready"
-            }
-        } catch (e: Exception) {
-            withContext(Dispatchers.Main) {
-                statusText = "Engine load error: ${e.localizedMessage}"
             }
         }
     }
 
     private fun runInference(userInput: String) {
         val sessionId = currentSessionId ?: return
-        if (userInput.isBlank() || llamaModel == null) return
+        val engine = currentEngine
+        if (userInput.isBlank() || engine == null) return
         
         isGenerating = true
         statusText = "Status: Generating response..."
@@ -161,7 +191,7 @@ class MainActivity : ComponentActivity() {
 
             val responseBuilder = StringBuilder()
             try {
-                llamaModel?.generateStream(promptBuilder.toString())?.collect { token ->
+                engine.generateStream(promptBuilder.toString()).collect { token ->
                     responseBuilder.append(token)
                 }
                 database.chatDao().insertMessage(ChatMessage(sessionId = sessionId, role = "assistant", content = responseBuilder.toString().trim()))
@@ -170,7 +200,7 @@ class MainActivity : ComponentActivity() {
             } finally {
                 withContext(Dispatchers.Main) {
                     isGenerating = false
-                    statusText = "Status: Model Loaded & Ready"
+                    statusText = "Status: Model Ready"
                 }
             }
         }
@@ -178,7 +208,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { llamaModel?.close() } catch (_: Exception) {}
+        try { currentEngine?.close() } catch (_: Exception) {}
     }
 }
 
@@ -217,7 +247,7 @@ fun MainScreen(
                     Text("+ New Chat")
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                Divider()
+                HorizontalDivider()
                 LazyColumn(modifier = Modifier.fillMaxWidth()) {
                     items(sessions) { session ->
                         NavigationDrawerItem(

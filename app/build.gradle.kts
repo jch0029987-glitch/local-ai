@@ -83,4 +83,6 @@ dependencies {
 
     // LiteRT-LM (Language Model runtime for .litertlm / generative tasks)
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 }

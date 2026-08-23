@@ -6,6 +6,7 @@ import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -64,19 +65,19 @@ class LiteRtEngine(private val context: Context) {
             }
         }
 
-        // Create the active conversation session using correct API
+        // Create the active conversation session
         conversation = engine?.createConversation()
     }
 
     /**
-     * Streams the generated model response token by token using Kotlin Flows and sendMessageAsync.
+     * Streams the generated model response chunks as Message flows.
      */
-    fun generateResponseStream(prompt: String): Flow<String> = flow {
+    fun generateResponseStream(prompt: String): Flow<Message> = flow {
         val activeConversation = conversation ?: throw IllegalStateException("Engine or Conversation is not initialized. Call initialize() first.")
         
-        // Stream text response chunks asynchronously
-        activeConversation.sendMessageAsync(prompt).collect { chunk ->
-            emit(chunk)
+        // Stream message chunks asynchronously using the correct SDK method
+        activeConversation.sendMessageAsync(Message(prompt)).collect { messageChunk ->
+            emit(messageChunk)
         }
     }.flowOn(Dispatchers.IO)
 

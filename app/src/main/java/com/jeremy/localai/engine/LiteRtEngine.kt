@@ -6,7 +6,6 @@ import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Conversation
-import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -68,9 +67,11 @@ class LiteRtEngine(private val context: Context) : AiEngine {
     override fun generateStream(prompt: String): Flow<String> = flow {
         val activeConversation = conversation ?: throw IllegalStateException("Engine or Conversation is not initialized. Call loadModel() first.")
         
-        // Stream text chunks asynchronously and emit individual token strings
-        activeConversation.sendMessageAsync(Message(prompt)).collect { messageChunk ->
-            emit(messageChunk.text ?: "")
+        // Use the native string text parameter stream or collect response chunks
+        activeConversation.sendMessageAsync(prompt).collect { chunk ->
+            // Emits chunk text safely from response payload
+            val textValue = chunk.toString() 
+            emit(textValue)
         }
     }.flowOn(Dispatchers.IO)
 

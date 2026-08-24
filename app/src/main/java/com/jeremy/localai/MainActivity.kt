@@ -40,13 +40,14 @@ import com.jeremy.localai.engine.LiteRtEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 import java.io.File
 import java.io.FileOutputStream
 
-// --- App Preferences for Onboarding & Setup ---
+// --- App Preferences for Onboarding & Setup State ---
 class AppPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("local_ai_prefs", Context.MODE_PRIVATE)
 
@@ -89,7 +90,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Load sessions list reactively from Room
+        // Reactively manage Room database sessions
         lifecycleScope.launch(Dispatchers.IO) {
             database.chatDao().getAllSessions().collectLatest { sessions ->
                 sessionsState.value = sessions
@@ -102,7 +103,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Load messages for current session dynamically from Room
+        // Reactively load chat messages for the active session ID
         lifecycleScope.launch(Dispatchers.IO) {
             snapshotFlow { currentSessionId }.collectLatest { sessionId ->
                 if (sessionId != null) {
@@ -188,7 +189,7 @@ class MainActivity : ComponentActivity() {
                                 temperature = options.temperature
                             }
                         }
-                        override fun generateStream(prompt: String) = kotlinx.coroutines.flow.flow {
+                        override fun generateStream(prompt: String) = flow {
                             model?.generateStream(prompt)?.collect { token -> emit(token) }
                         }
                         override fun close() { model?.close() }
@@ -248,7 +249,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- Navigation & Router ---
+// --- App Root Navigation Router ---
 @Composable
 fun AppRootNavigation(
     status: String,
@@ -311,7 +312,7 @@ fun AppRootNavigation(
     }
 }
 
-// --- Onboarding & Setup UI Screens (4 Pages) ---
+// --- Intelligent 4-Page Onboarding ---
 @Composable
 fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
     val pagerState = rememberPagerState(pageCount = { 4 })
@@ -339,12 +340,12 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                 when (page) {
                     0 -> OnboardingPageView(
                         title = "100% Offline AI Execution",
-                        description = "Run GGUF and LiteRT models natively utilizing your device's hardware acceleration without relying on cloud servers.",
+                        description = "Run GGUF and LiteRT models natively utilizing hardware acceleration without relying on cloud servers.",
                         icon = Icons.Default.CloudOff
                     )
                     1 -> OnboardingPageView(
                         title = "Zero Data Leakage",
-                        description = "Your prompts, session data, and private context remain securely inside your hardware environment.",
+                        description = "Your prompts, session data, and private configurations remain safely stored on-device.",
                         icon = Icons.Default.Security
                     )
                     2 -> ModelImportGuidePageView()
@@ -461,7 +462,7 @@ fun ModelImportGuidePageView() {
         GuideStepCard(
             step = "2",
             title = "Use In-App File Picker",
-            description = "Tap 'Select Model' on the main hub dashboard to load your downloaded `.gguf` or `.litertlm` file straight from storage."
+            description = "Tap 'Select Model' on the dashboard to load your downloaded `.gguf` or `.litertlm` file straight from storage."
         )
     }
 }
@@ -584,7 +585,7 @@ fun SetupConfigurationPageView(
 @Composable
 fun SplashScreen(onLoadingFinished: () -> Unit) {
     LaunchedEffect(Unit) {
-        delay(1800L)
+        delay(1500L)
         onLoadingFinished()
     }
 
@@ -616,7 +617,7 @@ fun SplashScreen(onLoadingFinished: () -> Unit) {
     }
 }
 
-// --- MainScreen UI & Drawer ---
+// --- Professional Chat Interface & Drawer ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -636,9 +637,10 @@ fun MainScreen(
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+    // Smooth auto-scroll behavior for incoming tokens and new entries
+    LaunchedEffect(messages.size, isGenerating) {
+        if (messages.isNotEmpty() || isGenerating) {
+            listState.animateScrollToItem(if (isGenerating) messages.size else maxOf(0, messages.size - 1))
         }
     }
 
@@ -656,7 +658,7 @@ fun MainScreen(
                 LazyColumn(modifier = Modifier.fillMaxWidth()) {
                     items(sessions) { session ->
                         NavigationDrawerItem(
-                            label = { Text(session.title) },
+                            label = { Text(session.title, maxLines = 1) },
                             selected = session.id == currentSessionId,
                             onClick = {
                                 onSelectSession(session.id)
@@ -677,6 +679,11 @@ fun MainScreen(
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(Icons.Default.Menu, contentDescription = "Menu")
                         }
+                    },
+                    actions = {
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
                     }
                 )
             }
@@ -685,46 +692,110 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .padding(16.dp)
+                    .padding(horizontal = 16.dp)
             ) {
-                Text(text = status, style = MaterialTheme.typography.bodyMedium)
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onSelectModel, modifier = Modifier.weight(1f)) {
+                // Status Bar & Model Picker Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(onClick = onSelectModel) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text("Select Model")
-                    }
-                    OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
-                        Text("Settings")
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(modifier = Modifier.padding(bottom = 8.dp))
 
+                // Professional Chat Bubbles Feed
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     items(messages) { msg ->
                         val isUser = msg.role == "user"
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isUser) MaterialTheme.colorScheme.primaryContainer 
-                                                 else MaterialTheme.colorScheme.surfaceVariant
-                            ),
-                            modifier = Modifier.fillMaxWidth()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp),
+                            alignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = if (isUser) "You" else "Assistant",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(text = msg.content, style = MaterialTheme.typography.bodyLarge)
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isUser) 
+                                        MaterialTheme.colorScheme.primaryContainer 
+                                    else 
+                                        MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                shape = RoundedCornerShape(
+                                    topStart = 16.dp,
+                                    topEnd = 16.dp,
+                                    bottomStart = if (isUser) 16.dp else 4.dp,
+                                    bottomEnd = if (isUser) 4.dp else 16.dp
+                                ),
+                                modifier = Modifier.widthIn(max = 300.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = if (isUser) "You" else "Assistant",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = msg.content,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Pulsing Typing Indicator During Token Stream Generation
+                    if (isGenerating) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp),
+                                alignment = Alignment.CenterStart
+                            ) {
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                    ),
+                                    shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = "Generating response...",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -732,24 +803,48 @@ fun MainScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Chat Input and Action Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     OutlinedTextField(
                         value = textInput,
                         onValueChange = { textInput = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("Type a prompt...") },
-                        maxLines = 3
+                        placeholder = { Text("Type a message...") },
+                        maxLines = 4,
+                        shape = RoundedCornerShape(24.dp)
                     )
-                    Button(
+                    IconButton(
                         onClick = {
                             if (textInput.isNotBlank()) {
                                 onSendPrompt(textInput)
                                 textInput = ""
                             }
                         },
-                        enabled = !isGenerating && textInput.isNotBlank()
+                        enabled = !isGenerating && textInput.isNotBlank(),
+                        modifier = Modifier
+                            .size(50.dp)
+                            .background(
+                                color = if (!isGenerating && textInput.isNotBlank()) 
+                                    MaterialTheme.colorScheme.primary 
+                                else 
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                shape = CircleShape
+                            )
                     ) {
-                        Text("Send")
+                        Icon(
+                            imageVector = Icons.Default.Send,
+                            contentDescription = "Send",
+                            tint = if (!isGenerating && textInput.isNotBlank()) 
+                                MaterialTheme.colorScheme.onPrimary 
+                            else 
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }

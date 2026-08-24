@@ -731,7 +731,7 @@ fun MainScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 4.dp),
-                            alignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
+                            contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
                         ) {
                             Card(
                                 colors = CardDefaults.cardColors(
@@ -771,7 +771,7 @@ fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 4.dp),
-                                alignment = Alignment.CenterStart
+                                contentAlignment = Alignment.CenterStart
                             ) {
                                 Card(
                                     colors = CardDefaults.cardColors(

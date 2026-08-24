@@ -97,14 +97,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Automatically verify if a default downloaded model exists in internal storage on startup
         val defaultModelFile = File(filesDir, "imported_model.gguf")
         if (defaultModelFile.exists() && modelPath == null) {
             modelPath = defaultModelFile.absolutePath
             autoLoadStoredModel(defaultModelFile.absolutePath)
         }
 
-        // Reactively manage Room database sessions
         lifecycleScope.launch(Dispatchers.IO) {
             database.chatDao().getAllSessions().collectLatest { sessions ->
                 sessionsState.value = sessions
@@ -117,7 +115,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Reactively load chat messages for the active session ID
         lifecycleScope.launch(Dispatchers.IO) {
             snapshotFlow { currentSessionId }.collectLatest { sessionId ->
                 if (sessionId != null) {
@@ -820,31 +817,32 @@ fun MainScreen(
                     Text(
                         text = status,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     
-                    // Fixed interactive container supporting touch taps and keyboard D-pad/focus triggers
-                    Box(
-                        modifier = Modifier
-                            .clickable { onSelectModel() }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // Material3 OutlinedButton guarantees proper touch event capture 
+                    // and bypasses parent drawer/gesture interceptor issues.
+                    OutlinedButton(
+                        onClick = onSelectModel,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen, 
-                                contentDescription = null, 
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Select Model",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen, 
+                            contentDescription = null, 
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Select Model",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
 

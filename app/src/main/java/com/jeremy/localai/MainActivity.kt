@@ -610,8 +610,7 @@ fun ModelDownloadScreen(
                         progress = { progressPercent / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(8.dp),
-                        shape = RoundedCornerShape(4.dp)
+                            .height(8.dp)
                     )
                     Text(
                         text = progressDetailsText,

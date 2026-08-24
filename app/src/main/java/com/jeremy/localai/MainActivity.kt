@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -310,10 +311,10 @@ fun AppRootNavigation(
     }
 }
 
-// --- Onboarding & Setup UI Screens ---
+// --- Onboarding & Setup UI Screens (4 Pages) ---
 @Composable
 fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
-    val pagerState = rememberPagerState(pageCount = { 3 })
+    val pagerState = rememberPagerState(pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
 
     var useOffline by remember { mutableStateOf(true) }
@@ -346,7 +347,8 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                         description = "Your prompts, session data, and private context remain securely inside your hardware environment.",
                         icon = Icons.Default.Security
                     )
-                    2 -> SetupConfigurationPageView(
+                    2 -> ModelImportGuidePageView()
+                    3 -> SetupConfigurationPageView(
                         useOffline = useOffline,
                         onOfflineChanged = { useOffline = it },
                         modelUrl = targetModelUrl,
@@ -360,7 +362,7 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                     modifier = Modifier.padding(bottom = 24.dp),
                     horizontalArrangement = Arrangement.Center
                 ) {
-                    repeat(3) { index ->
+                    repeat(4) { index ->
                         Box(
                             modifier = Modifier
                                 .padding(4.dp)
@@ -378,7 +380,7 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
 
                 Button(
                     onClick = {
-                        if (pagerState.currentPage < 2) {
+                        if (pagerState.currentPage < 3) {
                             coroutineScope.launch {
                                 pagerState.animateScrollToPage(pagerState.currentPage + 1)
                             }
@@ -390,7 +392,7 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                         .fillMaxWidth()
                         .height(50.dp)
                 ) {
-                    Text(text = if (pagerState.currentPage == 2) "Initialize App" else "Next")
+                    Text(text = if (pagerState.currentPage == 3) "Initialize App" else "Next")
                 }
             }
         }
@@ -429,31 +431,105 @@ fun OnboardingPageView(title: String, description: String, icon: androidx.compos
 }
 
 @Composable
-fun SetupConfigurationPageView(
-    useOffline: Boolean,
-    onOfflineChanged: (Boolean) -> Unit,
-    modelUrl: String,
-    onModelUrlChanged: (String) -> Unit
-) {
+fun ModelImportGuidePageView() {
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.Start,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Engine Setup Options",
+            text = "How to Get Models",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Configure how your local runtime acquires model weights.",
+            text = "LocalAI supports standard GGUF and LiteRT-LM format files.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
+
+        GuideStepCard(
+            step = "1",
+            title = "Download from Hugging Face",
+            description = "Grab any mobile-optimized GGUF model file (like Qwen or Llama) using your phone browser."
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        GuideStepCard(
+            step = "2",
+            title = "Use In-App File Picker",
+            description = "Tap 'Select Model' on the main hub dashboard to load your downloaded `.gguf` or `.litertlm` file straight from storage."
+        )
+    }
+}
+
+@Composable
+fun GuideStepCard(step: String, title: String, description: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(text = step, color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(text = description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+fun SetupConfigurationPageView(
+    useOffline: Boolean,
+    onOfflineChanged: (Boolean) -> Unit,
+    modelUrl: String,
+    onModelUrlChanged: (String) -> Unit
+) {
+    val presetModels = listOf(
+        "Qwen 2.5 (1.5B Instruct)" to "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "Llama 3.2 (1B Instruct)" to "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        "Phi-3.5 Mini Instruct" to "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+    )
+
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "Intelligent Engine Setup",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Choose pure offline manual loading or select a pre-verified Hugging Face preset URL.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -469,23 +545,38 @@ fun SetupConfigurationPageView(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "Pure Offline Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(text = "I will manually manage my local GGUF/LiteRT files.", style = MaterialTheme.typography.bodySmall)
+                    Text(text = "I'll manage local files via file picker.", style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = useOffline, onCheckedChange = onOfflineChanged)
             }
         }
 
         if (!useOffline) {
-            Spacer(modifier = Modifier.height(16.dp))
-            OutlinedTextField(
-                value = modelUrl,
-                onValueChange = onModelUrlChanged,
-                label = { Text("Model Download URL (.gguf)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = false,
-                maxLines = 3,
-                shape = RoundedCornerShape(8.dp)
-            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = "Hugging Face Presets:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(6.dp))
+
+            presetModels.forEach { (name, url) ->
+                val isSelected = modelUrl == url
+                OutlinedCard(
+                    onClick = { onModelUrlChanged(url) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surface
+                    ),
+                    border = BorderStroke(
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(text = name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                        Text(text = url, style = MaterialTheme.typography.labelSmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         }
     }
 }
@@ -525,7 +616,7 @@ fun SplashScreen(onLoadingFinished: () -> Unit) {
     }
 }
 
-// --- Your Original MainScreen UI & Drawer ---
+// --- MainScreen UI & Drawer ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(

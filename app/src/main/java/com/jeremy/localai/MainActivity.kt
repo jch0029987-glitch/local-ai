@@ -203,7 +203,7 @@ class MainActivity : ComponentActivity() {
                         messages = messagesState.value,
                         isGenerating = isGenerating,
                         onTriggerFilePicker = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
-                        onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
+                        onOpenSettings = {},
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
                         onSendPrompt = { prompt -> runInference(prompt) },

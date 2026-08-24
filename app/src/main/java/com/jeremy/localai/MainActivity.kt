@@ -607,7 +607,7 @@ fun ModelDownloadScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     LinearProgressIndicator(
-                        progress = progressPercent / 100f,
+                        progress = { progressPercent / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp),

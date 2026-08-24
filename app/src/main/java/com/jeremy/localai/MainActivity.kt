@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,6 +47,7 @@ import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 import java.io.File
 import java.io.FileOutputStream
+import java.net.URL
 
 // --- App Preferences for Onboarding & Setup State ---
 class AppPreferences(context: Context) {
@@ -84,11 +86,23 @@ class MainActivity : ComponentActivity() {
     private var messagesState = mutableStateOf<List<ChatMessage>>(emptyList())
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { importModelFile(it) }
+        uri?.let { 
+            try {
+                contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {}
+            importModelFile(it) 
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Automatically verify if a default downloaded model exists in internal storage on startup
+        val defaultModelFile = File(filesDir, "imported_model.gguf")
+        if (defaultModelFile.exists() && modelPath == null) {
+            modelPath = defaultModelFile.absolutePath
+            autoLoadStoredModel(defaultModelFile.absolutePath)
+        }
 
         // Reactively manage Room database sessions
         lifecycleScope.launch(Dispatchers.IO) {
@@ -126,7 +140,7 @@ class MainActivity : ComponentActivity() {
                         currentSessionId = currentSessionId,
                         messages = messagesState.value,
                         isGenerating = isGenerating,
-                        onSelectModel = { filePickerLauncher.launch(arrayOf("*/*")) },
+                        onSelectModel = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
@@ -147,8 +161,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun autoLoadStoredModel(path: String) {
+        statusText = "Status: Loading stored model..."
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
+                val options = EngineOptions(
+                    threads = prefs.getInt("threads", 4),
+                    contextSize = prefs.getInt("context_size", 2048),
+                    temperature = prefs.getFloat("temperature", 0.7f)
+                )
+
+                class GgufEngineWrapper : AiEngine {
+                    private var model: LlamaModel? = null
+                    override suspend fun loadModel(path: String, options: EngineOptions) {
+                        model = LlamaModel.load(path) {
+                            contextSize = options.contextSize
+                            threads = options.threads
+                            temperature = options.temperature
+                        }
+                    }
+                    override fun generateStream(prompt: String) = flow {
+                        model?.generateStream(prompt)?.collect { token -> emit(token) }
+                    }
+                    override fun close() { model?.close() }
+                }
+
+                val ggufEngine = GgufEngineWrapper()
+                ggufEngine.loadModel(path, options)
+                currentEngine = ggufEngine
+                withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { statusText = "Status: Auto-load failed" }
+            }
+        }
+    }
+
     private fun importModelFile(uri: Uri) {
-        statusText = "Importing model file..."
+        statusText = "Status: Importing file..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val pathString = uri.toString()
@@ -173,13 +223,13 @@ class MainActivity : ComponentActivity() {
                 try { currentEngine?.close() } catch (_: Exception) {}
 
                 if (isLiteRt) {
-                    withContext(Dispatchers.Main) { statusText = "Loading LiteRT-LM Engine..." }
+                    withContext(Dispatchers.Main) { statusText = "Status: Loading LiteRT-LM..." }
                     val liteRtEngine = LiteRtEngine(this@MainActivity)
                     liteRtEngine.loadModel(modelPath!!, options)
                     currentEngine = liteRtEngine
                     withContext(Dispatchers.Main) { statusText = "Status: LiteRT-LM Ready" }
                 } else {
-                    withContext(Dispatchers.Main) { statusText = "Loading GGUF Engine..." }
+                    withContext(Dispatchers.Main) { statusText = "Status: Loading GGUF Model..." }
                     class GgufEngineWrapper : AiEngine {
                         private var model: LlamaModel? = null
                         override suspend fun loadModel(path: String, options: EngineOptions) {
@@ -203,7 +253,7 @@ class MainActivity : ComponentActivity() {
 
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    statusText = "Load failed: ${e.localizedMessage}"
+                    statusText = "Status: Load failed (${e.localizedMessage ?: "Unknown"})"
                 }
             }
         }
@@ -312,14 +362,19 @@ fun AppRootNavigation(
     }
 }
 
-// --- Intelligent 4-Page Onboarding ---
+// --- Intelligent Onboarding with Background Download Integration ---
 @Composable
 fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
     val pagerState = rememberPagerState(pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     var useOffline by remember { mutableStateOf(true) }
     var targetModelUrl by remember { mutableStateOf("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf") }
+    
+    var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0f) }
+    var downloadStatusText by remember { mutableStateOf("") }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -340,12 +395,12 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                 when (page) {
                     0 -> OnboardingPageView(
                         title = "100% Offline AI Execution",
-                        description = "Run GGUF and LiteRT models natively utilizing hardware acceleration without relying on cloud servers.",
+                        description = "Run GGUF and LiteRT models natively utilizing hardware acceleration without cloud servers.",
                         icon = Icons.Default.CloudOff
                     )
                     1 -> OnboardingPageView(
                         title = "Zero Data Leakage",
-                        description = "Your prompts, session data, and private configurations remain safely stored on-device.",
+                        description = "Your prompts, session data, and custom setups remain securely contained on-device.",
                         icon = Icons.Default.Security
                     )
                     2 -> ModelImportGuidePageView()
@@ -353,7 +408,10 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                         useOffline = useOffline,
                         onOfflineChanged = { useOffline = it },
                         modelUrl = targetModelUrl,
-                        onModelUrlChanged = { targetModelUrl = it }
+                        onModelUrlChanged = { targetModelUrl = it },
+                        isDownloading = isDownloading,
+                        downloadProgress = downloadProgress,
+                        downloadStatusText = downloadStatusText
                     )
                 }
             }
@@ -386,14 +444,53 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                                 pagerState.animateScrollToPage(pagerState.currentPage + 1)
                             }
                         } else {
-                            onFinished(useOffline, targetModelUrl)
+                            if (!useOffline && !isDownloading) {
+                                isDownloading = true
+                                downloadStatusText = "Downloading preset model..."
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    try {
+                                        val url = URL(targetModelUrl)
+                                        val connection = url.openConnection()
+                                        connection.connect()
+                                        val fileSize = connection.contentLength.toFloat()
+                                        
+                                        val destination = File(context.filesDir, "imported_model.gguf")
+                                        url.openStream().use { input ->
+                                            FileOutputStream(destination).use { output ->
+                                                val buffer = ByteArray(8192)
+                                                var bytesRead: Int
+                                                var totalBytesRead = 0f
+                                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                                    output.write(buffer, 0, bytesRead)
+                                                    totalBytesRead += bytesRead
+                                                    if (fileSize > 0) {
+                                                        downloadProgress = totalBytesRead / fileSize
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        withContext(Dispatchers.Main) {
+                                            isDownloading = false
+                                            onFinished(useOffline, targetModelUrl)
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) {
+                                            isDownloading = false
+                                            downloadStatusText = "Download error: ${e.localizedMessage}"
+                                        }
+                                    }
+                                }
+                            } else {
+                                onFinished(useOffline, targetModelUrl)
+                            }
                         }
                     },
+                    enabled = !isDownloading,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(50.dp)
                 ) {
-                    Text(text = if (pagerState.currentPage == 3) "Initialize App" else "Next")
+                    Text(text = if (pagerState.currentPage == 3) (if (isDownloading) "Downloading..." else "Initialize App") else "Next")
                 }
             }
         }
@@ -456,13 +553,13 @@ fun ModelImportGuidePageView() {
         GuideStepCard(
             step = "1",
             title = "Download from Hugging Face",
-            description = "Grab any mobile-optimized GGUF model file (like Qwen or Llama) using your phone browser."
+            description = "Grab any mobile-optimized GGUF model file using your browser."
         )
         Spacer(modifier = Modifier.height(10.dp))
         GuideStepCard(
             step = "2",
             title = "Use In-App File Picker",
-            description = "Tap 'Select Model' on the dashboard to load your downloaded `.gguf` or `.litertlm` file straight from storage."
+            description = "Tap 'Select Model' on the dashboard anytime to load your `.gguf` file."
         )
     }
 }
@@ -504,12 +601,14 @@ fun SetupConfigurationPageView(
     useOffline: Boolean,
     onOfflineChanged: (Boolean) -> Unit,
     modelUrl: String,
-    onModelUrlChanged: (String) -> Unit
+    onModelUrlChanged: (String) -> Unit,
+    isDownloading: Boolean,
+    downloadProgress: Float,
+    downloadStatusText: String
 ) {
     val presetModels = listOf(
         "Qwen 2.5 (1.5B Instruct)" to "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "Llama 3.2 (1B Instruct)" to "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-        "Phi-3.5 Mini Instruct" to "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+        "Llama 3.2 (1B Instruct)" to "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     )
 
     Column(
@@ -518,14 +617,14 @@ fun SetupConfigurationPageView(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Intelligent Engine Setup",
+            text = "Engine Setup & Preset Download",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Choose pure offline manual loading or select a pre-verified Hugging Face preset URL.",
+            text = "Select pure offline file-picker mode or download a Hugging Face preset automatically.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -545,8 +644,8 @@ fun SetupConfigurationPageView(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "Pure Offline Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(text = "I'll manage local files via file picker.", style = MaterialTheme.typography.bodySmall)
+                    Text(text = "Pure Offline File Picker", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(text = "Manually pick files from device storage.", style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = useOffline, onCheckedChange = onOfflineChanged)
             }
@@ -554,7 +653,7 @@ fun SetupConfigurationPageView(
 
         if (!useOffline) {
             Spacer(modifier = Modifier.height(12.dp))
-            Text(text = "Hugging Face Presets:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(text = "Select Preset Model URL:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(6.dp))
 
             presetModels.forEach { (name, url) ->
@@ -578,6 +677,23 @@ fun SetupConfigurationPageView(
                     }
                 }
             }
+
+            if (isDownloading) {
+                Spacer(modifier = Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = { downloadProgress },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "${(downloadProgress * 100).toInt()}% - $downloadStatusText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else if (downloadStatusText.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = downloadStatusText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }
@@ -585,7 +701,7 @@ fun SetupConfigurationPageView(
 @Composable
 fun SplashScreen(onLoadingFinished: () -> Unit) {
     LaunchedEffect(Unit) {
-        delay(1500L)
+        delay(1200L)
         onLoadingFinished()
     }
 
@@ -598,7 +714,7 @@ fun SplashScreen(onLoadingFinished: () -> Unit) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
                 imageVector = Icons.Default.Memory,
-                contentDescription = "Engine Loading",
+                contentDescription = "Loading",
                 modifier = Modifier.size(80.dp),
                 tint = MaterialTheme.colorScheme.primary
             )
@@ -637,7 +753,6 @@ fun MainScreen(
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    // Smooth auto-scroll behavior for incoming tokens and new entries
     LaunchedEffect(messages.size, isGenerating) {
         if (messages.isNotEmpty() || isGenerating) {
             listState.animateScrollToItem(if (isGenerating) messages.size else maxOf(0, messages.size - 1))
@@ -707,10 +822,29 @@ fun MainScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    TextButton(onClick = onSelectModel) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Select Model")
+                    
+                    // Fixed interactive container supporting touch taps and keyboard D-pad/focus triggers
+                    Box(
+                        modifier = Modifier
+                            .clickable { onSelectModel() }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen, 
+                                contentDescription = null, 
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Select Model",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
 

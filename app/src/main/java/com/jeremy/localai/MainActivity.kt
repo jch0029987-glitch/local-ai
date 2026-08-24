@@ -395,7 +395,7 @@ fun AppRootNavigation(
             OnboardingScreen(
                 onFinished = { savedPath ->
                     prefs.hasSeenOnboarding = true
-                    onModelPathReady(savedPath)
+                    if (savedPath != null) onModelPathReady(savedPath)
                     navController.navigate(AppScreen.MainHub.route) {
                         popUpTo(AppScreen.Onboarding.route) { inclusive = true }
                     }
@@ -671,10 +671,10 @@ fun ModelDownloadScreen(
     }
 }
 
-// --- Intelligent Onboarding with Background Download Integration ---
+// --- Intelligent Onboarding with Optional Download Integration ---
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun OnboardingScreen(onFinished: (String) -> Unit) {
+fun OnboardingScreen(onFinished: (String?) -> Unit) {
     val pagerState = rememberPagerState(pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
 
@@ -707,34 +707,53 @@ fun OnboardingScreen(onFinished: (String) -> Unit) {
                         title = "High Performance",
                         description = "Optimized via native hardware execution layers to ensure fast inference speeds and low thermal footprint."
                     )
-                    3 -> ModelDownloadScreen(
-                        titleText = "Download Default Model",
-                        subtitleText = "Fetch your initial local language model to complete setup.",
-                        onDownloadComplete = { savedPath ->
-                            onFinished(savedPath)
-                        }
-                    )
+                    3 -> Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        ModelDownloadScreen(
+                            titleText = "Download Default Model (Optional)",
+                            subtitleText = "Fetch your initial local language model now, or skip and load one later.",
+                            onDownloadComplete = { savedPath ->
+                                onFinished(savedPath)
+                            }
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (pagerState.currentPage < 3) {
-                Button(
-                    onClick = {
-                        coroutineScope.launch {
-                            pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Text(
-                        text = "Next",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (pagerState.currentPage == 3) {
+                    OutlinedButton(
+                        onClick = { onFinished(null) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Skip for Now")
+                    }
+                }
+
+                if (pagerState.currentPage < 3) {
+                    Button(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Next", style = MaterialTheme.typography.titleMedium)
+                    }
                 }
             }
         }

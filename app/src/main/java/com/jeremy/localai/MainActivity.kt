@@ -478,4 +478,189 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                 when (page) {
                     0 -> OnboardingPageView(
                         title = "100% Offline AI Execution",
-                        description = "R
+                        description = "Run powerful large language models locally on your device hardware without requiring an active cloud connection."
+                    )
+                    1 -> OnboardingPageView(
+                        title = "Private & Secure",
+                        description = "Your prompts, chat conversations, and data never leave your device storage. Complete total local privacy."
+                    )
+                    2 -> OnboardingPageView(
+                        title = "High Performance",
+                        description = "Optimized via native hardware execution layers to ensure fast inference speeds and low thermal footprint."
+                    )
+                    3 -> OnboardingPageView(
+                        title = "Ready to Begin",
+                        description = "Tap finish below to initialize your application environment and start chatting with your local model."
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = {
+                    if (pagerState.currentPage < 3) {
+                        coroutineScope.launch {
+                            pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                        }
+                    } else {
+                        onFinished(useOffline, targetModelUrl)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    text = if (pagerState.currentPage < 3) "Next" else "Get Started",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun OnboardingPageView(title: String, description: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.SmartToy,
+            contentDescription = null,
+            modifier = Modifier.size(96.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = description,
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// Dummy composables to satisfy reference completeness if missing in other files
+@Composable
+fun SplashScreen(onLoadingFinished: () -> Unit) {
+    LaunchedEffect(Unit) {
+        delay(1200)
+        onLoadingFinished()
+    }
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator()
+    }
+}
+
+@Composable
+fun MainScreen(
+    status: String,
+    sessions: List<ChatSession>,
+    currentSessionId: Long?,
+    messages: List<ChatMessage>,
+    isGenerating: Boolean,
+    onNavigateToModelManager: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onNewChat: () -> Unit,
+    onSelectSession: (Long) -> Unit,
+    onSendPrompt: (String) -> Unit
+) {
+    var inputPrompt by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Local AI Hub") },
+                actions = {
+                    IconButton(onClick = onNavigateToModelManager) {
+                        Icon(Icons.Default.Storage, contentDescription = "Model Manager")
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(12.dp)
+        ) {
+            Text(text = status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(messages) { msg ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (msg.role == "user") 
+                                MaterialTheme.colorScheme.surfaceVariant 
+                            else 
+                                MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = if (msg.role == "user") "You" else "Assistant",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(text = msg.content, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = inputPrompt,
+                    onValueChange = { inputPrompt = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Type a prompt...") },
+                    maxLines = 4
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = {
+                        if (inputPrompt.isNotBlank() && !isGenerating) {
+                            onSendPrompt(inputPrompt)
+                            inputPrompt = ""
+                        }
+                    },
+                    enabled = !isGenerating
+                ) {
+                    Icon(Icons.Default.Send, contentDescription = "Send")
+                }
+            }
+        }
+    }
+}

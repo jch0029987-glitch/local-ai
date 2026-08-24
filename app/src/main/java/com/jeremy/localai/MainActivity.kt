@@ -1,5 +1,4 @@
 package com.jeremy.localai
-@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 import android.content.Context
 import android.content.Intent
 import android.net.Uri

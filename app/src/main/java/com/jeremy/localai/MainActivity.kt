@@ -203,7 +203,7 @@ class MainActivity : ComponentActivity() {
                         messages = messagesState.value,
                         isGenerating = isGenerating,
                         onTriggerFilePicker = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
-                        onOpenSettings = {},
+                        onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
                         onSendPrompt = { prompt -> runInference(prompt) },
@@ -607,7 +607,7 @@ fun ModelDownloadScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     LinearProgressIndicator(
-                        progress = { progressPercent / 100f },
+                        progress = progressPercent / 100f,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp),

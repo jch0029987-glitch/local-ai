@@ -1,4 +1,5 @@
 package com.jeremy.localai
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -6,15 +7,12 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -38,14 +36,81 @@ import com.jeremy.localai.engine.EngineOptions
 import com.jeremy.localai.engine.LiteRtEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.codeshipping.llamakotlin.LlamaModel
 import java.io.File
 import java.io.FileOutputStream
-import java.net.URL
+import java.text.DecimalFormat
+
+// --- Background Model Downloader Utility & State ---
+sealed class DownloadState {
+    data class Progress(val progressBytes: Long, val totalBytes: Long, val percent: Float) : DownloadState()
+    data class Success(val file: File) : DownloadState()
+    data class Error(val message: String) : DownloadState()
+}
+
+object ModelDownloader {
+    private val client = OkHttpClient()
+
+    fun downloadModel(context: Context, urlString: String, fileName: String): Flow<DownloadState> = flow {
+        emit(DownloadState.Progress(0, 0, 0f))
+        val destinationFile = File(context.filesDir, fileName)
+
+        try {
+            val request = Request.Builder().url(urlString).build()
+            val response = client.newCall(request).execute()
+
+            if (!response.isSuccessful) {
+                emit(DownloadState.Error("Server error code: ${response.code}"))
+                return@flow
+            }
+
+            val body = response.body
+            if (body == null) {
+                emit(DownloadState.Error("Empty server response body"))
+                return@flow
+            }
+
+            val totalBytes = body.contentLength()
+            var downloadedBytes = 0L
+
+            body.byteStream().use { inputStream ->
+                FileOutputStream(destinationFile).use { outputStream ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, bytesRead)
+                        downloadedBytes += bytesRead
+                        val percent = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()) * 100f else 0f
+                        emit(DownloadState.Progress(downloadedBytes, totalBytes, percent))
+                    }
+                }
+            }
+
+            emit(DownloadState.Success(destinationFile))
+        } catch (e: Exception) {
+            emit(DownloadState.Error(e.localizedMessage ?: "Unknown download error"))
+        }
+    }.flowOn(Dispatchers.IO)
+
+    fun formatSize(bytes: Long): String {
+        if (bytes <= 0) return "0 MB"
+        val mb = bytes / (1024.0 * 1024.0)
+        val gb = mb / 1024.0
+        return if (gb >= 1.0) {
+            DecimalFormat("#.##").format(gb) + " GB"
+        } else {
+            DecimalFormat("#.##").format(mb) + " MB"
+        }
+    }
+}
 
 // --- App Preferences for Onboarding & Setup State ---
 class AppPreferences(context: Context) {
@@ -69,6 +134,7 @@ sealed class AppScreen(val route: String) {
     object Onboarding : AppScreen("onboarding")
     object MainHub : AppScreen("main_hub")
     object ModelManager : AppScreen("model_manager")
+    object ModelDownloaderHub : AppScreen("model_downloader_hub")
 }
 
 class MainActivity : ComponentActivity() {
@@ -140,7 +206,8 @@ class MainActivity : ComponentActivity() {
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
-                        onSendPrompt = { prompt -> runInference(prompt) }
+                        onSendPrompt = { prompt -> runInference(prompt) },
+                        onModelPathReady = { path -> autoLoadStoredModel(path) }
                     )
                 }
             }
@@ -158,6 +225,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun autoLoadStoredModel(path: String) {
+        modelPath = path
         statusText = "Status: Loading stored model..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
@@ -182,6 +250,8 @@ class MainActivity : ComponentActivity() {
                     }
                     override fun close() { model?.close() }
                 }
+
+                try { currentEngine?.close() } catch (_: Exception) {}
 
                 val ggufEngine = GgufEngineWrapper()
                 ggufEngine.loadModel(path, options)
@@ -307,7 +377,8 @@ fun AppRootNavigation(
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
-    onSendPrompt: (String) -> Unit
+    onSendPrompt: (String) -> Unit,
+    onModelPathReady: (String) -> Unit
 ) {
     val context = LocalContext.current
     val navController = rememberNavController()
@@ -322,10 +393,9 @@ fun AppRootNavigation(
     NavHost(navController = navController, startDestination = startDestination) {
         composable(AppScreen.Onboarding.route) {
             OnboardingScreen(
-                onFinished = { offlineSelected, modelUrl ->
+                onFinished = { savedPath ->
                     prefs.hasSeenOnboarding = true
-                    prefs.useOfflineMode = offlineSelected
-                    prefs.selectedModelUrl = modelUrl
+                    onModelPathReady(savedPath)
                     navController.navigate(AppScreen.MainHub.route) {
                         popUpTo(AppScreen.Onboarding.route) { inclusive = true }
                     }
@@ -359,6 +429,18 @@ fun AppRootNavigation(
             ModelManagerScreen(
                 status = status,
                 onSelectFileClicked = onTriggerFilePicker,
+                onNavigateToDownloader = { navController.navigate(AppScreen.ModelDownloaderHub.route) },
+                onBackClicked = { navController.popBackStack() }
+            )
+        }
+        composable(AppScreen.ModelDownloaderHub.route) {
+            ModelDownloadScreen(
+                titleText = "Model Downloader",
+                subtitleText = "Fetch optimized models directly from verified remote repositories.",
+                onDownloadComplete = { savedPath ->
+                    onModelPathReady(savedPath)
+                    navController.popBackStack()
+                },
                 onBackClicked = { navController.popBackStack() }
             )
         }
@@ -371,6 +453,7 @@ fun AppRootNavigation(
 fun ModelManagerScreen(
     status: String,
     onSelectFileClicked: () -> Unit,
+    onNavigateToDownloader: () -> Unit,
     onBackClicked: () -> Unit
 ) {
     Scaffold(
@@ -391,7 +474,7 @@ fun ModelManagerScreen(
                 .padding(paddingValues)
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -406,39 +489,184 @@ fun ModelManagerScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            Icon(
-                imageVector = Icons.Default.FolderOpen,
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-
-            Text(
-                text = "Load Local GGUF / LiteRT Model",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
-            )
-
-            Text(
-                text = "Tap the button below to browse your device storage and select a compatible `.gguf` or `.litertlm` neural model file.",
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.weight(1f))
-
             Button(
+                onClick = onNavigateToDownloader,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.CloudDownload, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "Download Model from Cloud Hub", style = MaterialTheme.typography.titleMedium)
+            }
+
+            OutlinedButton(
                 onClick = onSelectFileClicked,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Icon(Icons.Default.FileOpen, contentDescription = null)
+                Icon(Icons.Default.FolderOpen, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(text = "Select Model File from Storage", style = MaterialTheme.typography.titleMedium)
+                Text(text = "Browse Local Storage File", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+    }
+}
+
+// --- Shared Reusable Model Download Screen ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModelDownloadScreen(
+    titleText: String = "Download Model",
+    subtitleText: String = "Select an optimized neural model to download directly to local storage.",
+    onDownloadComplete: (String) -> Unit,
+    onBackClicked: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    val modelName = "Qwen 2.5 (1.5B Instruct GGUF)"
+    val modelUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    val estimatedSize = "~986 MB"
+
+    var isDownloading by remember { mutableStateOf(false) }
+    var progressPercent by remember { mutableStateOf(0f) }
+    var progressDetailsText by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(
+        topBar = {
+            if (onBackClicked != null) {
+                TopAppBar(
+                    title = { Text(titleText) },
+                    navigationIcon = {
+                        IconButton(onClick = onBackClicked) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                )
+            }
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (onBackClicked == null) {
+                Text(
+                    text = titleText,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Text(
+                text = subtitleText,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = modelName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Badge { Text(estimatedSize) }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Optimized for fast local mobile inference with full on-device intelligence.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            if (isDownloading) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LinearProgressIndicator(
+                        progress = { progressPercent / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp),
+                        shape = RoundedCornerShape(4.dp)
+                    )
+                    Text(
+                        text = progressDetailsText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            errorMessage?.let { error ->
+                Text(
+                    text = "Error: $error",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Button(
+                onClick = {
+                    isDownloading = true
+                    errorMessage = null
+                    coroutineScope.launch {
+                        ModelDownloader.downloadModel(context, modelUrl, "imported_model.gguf").collect { state ->
+                            when (state) {
+                                is DownloadState.Progress -> {
+                                    progressPercent = state.percent
+                                    val downloadedFormatted = ModelDownloader.formatSize(state.progressBytes)
+                                    val totalFormatted = ModelDownloader.formatSize(state.totalBytes)
+                                    progressDetailsText = "Downloading... $downloadedFormatted / $totalFormatted (${state.percent.toInt()}%)"
+                                }
+                                is DownloadState.Success -> {
+                                    isDownloading = false
+                                    onDownloadComplete(state.file.absolutePath)
+                                }
+                                is DownloadState.Error -> {
+                                    isDownloading = false
+                                    errorMessage = state.message
+                                }
+                            }
+                        }
+                    }
+                },
+                enabled = !isDownloading,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.Download, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isDownloading) "Downloading Model..." else "Download & Initialize",
+                    style = MaterialTheme.typography.titleMedium
+                )
             }
         }
     }
@@ -447,17 +675,9 @@ fun ModelManagerScreen(
 // --- Intelligent Onboarding with Background Download Integration ---
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
+fun OnboardingScreen(onFinished: (String) -> Unit) {
     val pagerState = rememberPagerState(pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
-    val context = LocalContext.current
-
-    var useOffline by remember { mutableStateOf(true) }
-    var targetModelUrl by remember { mutableStateOf("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf") }
-    
-    var isDownloading by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableStateOf(0f) }
-    var downloadStatusText by remember { mutableStateOf("") }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -488,34 +708,35 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                         title = "High Performance",
                         description = "Optimized via native hardware execution layers to ensure fast inference speeds and low thermal footprint."
                     )
-                    3 -> OnboardingPageView(
-                        title = "Ready to Begin",
-                        description = "Tap finish below to initialize your application environment and start chatting with your local model."
+                    3 -> ModelDownloadScreen(
+                        titleText = "Download Default Model",
+                        subtitleText = "Fetch your initial local language model to complete setup.",
+                        onDownloadComplete = { savedPath ->
+                            onFinished(savedPath)
+                        }
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            Button(
-                onClick = {
-                    if (pagerState.currentPage < 3) {
+            if (pagerState.currentPage < 3) {
+                Button(
+                    onClick = {
                         coroutineScope.launch {
                             pagerState.animateScrollToPage(pagerState.currentPage + 1)
                         }
-                    } else {
-                        onFinished(useOffline, targetModelUrl)
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(
-                    text = if (pagerState.currentPage < 3) "Next" else "Get Started",
-                    style = MaterialTheme.typography.titleMedium
-                )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(
+                        text = "Next",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
             }
         }
     }

@@ -9,7 +9,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -70,6 +69,7 @@ sealed class AppScreen(val route: String) {
     object Splash : AppScreen("splash")
     object Onboarding : AppScreen("onboarding")
     object MainHub : AppScreen("main_hub")
+    object ModelManager : AppScreen("model_manager")
 }
 
 class MainActivity : ComponentActivity() {
@@ -137,7 +137,7 @@ class MainActivity : ComponentActivity() {
                         currentSessionId = currentSessionId,
                         messages = messagesState.value,
                         isGenerating = isGenerating,
-                        onSelectModel = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
+                        onTriggerFilePicker = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
@@ -304,7 +304,7 @@ fun AppRootNavigation(
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
-    onSelectModel: () -> Unit,
+    onTriggerFilePicker: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
@@ -349,12 +349,98 @@ fun AppRootNavigation(
                 currentSessionId = currentSessionId,
                 messages = messages,
                 isGenerating = isGenerating,
-                onSelectModel = onSelectModel,
+                onNavigateToModelManager = { navController.navigate(AppScreen.ModelManager.route) },
                 onOpenSettings = onOpenSettings,
                 onNewChat = onNewChat,
                 onSelectSession = onSelectSession,
                 onSendPrompt = onSendPrompt
             )
+        }
+        composable(AppScreen.ModelManager.route) {
+            ModelManagerScreen(
+                status = status,
+                onSelectFileClicked = onTriggerFilePicker,
+                onBackClicked = { navController.popBackStack() }
+            )
+        }
+    }
+}
+
+// --- Dedicated Model Management Screen ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModelManagerScreen(
+    status: String,
+    onSelectFileClicked: () -> Unit,
+    onBackClicked: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Model Management") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClicked) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(text = "Current Runtime Status", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(text = status, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Icon(
+                imageVector = Icons.Default.FolderOpen,
+                contentDescription = null,
+                modifier = Modifier.size(72.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+
+            Text(
+                text = "Load Local GGUF / LiteRT Model",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            Text(
+                text = "Tap the button below to browse your device storage and select a compatible `.gguf` or `.litertlm` neural model file.",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Button(
+                onClick = onSelectFileClicked,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.FileOpen, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "Select Model File from Storage", style = MaterialTheme.typography.titleMedium)
+            }
         }
     }
 }
@@ -392,594 +478,4 @@ fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
                 when (page) {
                     0 -> OnboardingPageView(
                         title = "100% Offline AI Execution",
-                        description = "Run GGUF and LiteRT models natively utilizing hardware acceleration without cloud servers.",
-                        icon = Icons.Default.CloudOff
-                    )
-                    1 -> OnboardingPageView(
-                        title = "Zero Data Leakage",
-                        description = "Your prompts, session data, and custom setups remain securely contained on-device.",
-                        icon = Icons.Default.Security
-                    )
-                    2 -> ModelImportGuidePageView()
-                    3 -> SetupConfigurationPageView(
-                        useOffline = useOffline,
-                        onOfflineChanged = { useOffline = it },
-                        modelUrl = targetModelUrl,
-                        onModelUrlChanged = { targetModelUrl = it },
-                        isDownloading = isDownloading,
-                        downloadProgress = downloadProgress,
-                        downloadStatusText = downloadStatusText
-                    )
-                }
-            }
-
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(
-                    modifier = Modifier.padding(bottom = 24.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    repeat(4) { index ->
-                        Box(
-                            modifier = Modifier
-                                .padding(4.dp)
-                                .size(if (pagerState.currentPage == index) 12.dp else 8.dp)
-                                .background(
-                                    color = if (pagerState.currentPage == index) 
-                                        MaterialTheme.colorScheme.primary 
-                                    else 
-                                        MaterialTheme.colorScheme.outlineVariant,
-                                    shape = CircleShape
-                                )
-                        )
-                    }
-                }
-
-                Button(
-                    onClick = {
-                        if (pagerState.currentPage < 3) {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                            }
-                        } else {
-                            if (!useOffline && !isDownloading) {
-                                isDownloading = true
-                                downloadStatusText = "Downloading preset model..."
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    try {
-                                        val url = URL(targetModelUrl)
-                                        val connection = url.openConnection()
-                                        connection.connect()
-                                        val fileSize = connection.contentLength.toFloat()
-                                        
-                                        val destination = File(context.filesDir, "imported_model.gguf")
-                                        url.openStream().use { input ->
-                                            FileOutputStream(destination).use { output ->
-                                                val buffer = ByteArray(8192)
-                                                var bytesRead: Int
-                                                var totalBytesRead = 0f
-                                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                                    output.write(buffer, 0, bytesRead)
-                                                    totalBytesRead += bytesRead
-                                                    if (fileSize > 0) {
-                                                        downloadProgress = totalBytesRead / fileSize
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        withContext(Dispatchers.Main) {
-                                            isDownloading = false
-                                            onFinished(useOffline, targetModelUrl)
-                                        }
-                                    } catch (e: Exception) {
-                                        withContext(Dispatchers.Main) {
-                                            isDownloading = false
-                                            downloadStatusText = "Download error: ${e.localizedMessage}"
-                                        }
-                                    }
-                                }
-                            } else {
-                                onFinished(useOffline, targetModelUrl)
-                            }
-                        }
-                    },
-                    enabled = !isDownloading,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                ) {
-                    Text(text = if (pagerState.currentPage == 3) (if (isDownloading) "Downloading..." else "Initialize App") else "Next")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun OnboardingPageView(title: String, description: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(110.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = description,
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-fun ModelImportGuidePageView() {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.Start,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "How to Get Models",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "LocalAI supports standard GGUF and LiteRT-LM format files.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        
-        Spacer(modifier = Modifier.height(20.dp))
-
-        GuideStepCard(
-            step = "1",
-            title = "Download from Hugging Face",
-            description = "Grab any mobile-optimized GGUF model file using your browser."
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        GuideStepCard(
-            step = "2",
-            title = "Use In-App File Picker",
-            description = "Tap 'Select Model' on the dashboard anytime to load your `.gguf` file."
-        )
-    }
-}
-
-@Composable
-fun GuideStepCard(step: String, title: String, description: String) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(text = step, color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
-                }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(text = description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-@Composable
-fun SetupConfigurationPageView(
-    useOffline: Boolean,
-    onOfflineChanged: (Boolean) -> Unit,
-    modelUrl: String,
-    onModelUrlChanged: (String) -> Unit,
-    isDownloading: Boolean,
-    downloadProgress: Float,
-    downloadStatusText: String
-) {
-    val presetModels = listOf(
-        "Qwen 2.5 (1.5B Instruct)" to "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "Llama 3.2 (1B Instruct)" to "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
-    )
-
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.Start,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "Engine Setup & Preset Download",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Select pure offline file-picker mode or download a Hugging Face preset automatically.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "Pure Offline File Picker", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(text = "Manually pick files from device storage.", style = MaterialTheme.typography.bodySmall)
-                }
-                Switch(checked = useOffline, onCheckedChange = onOfflineChanged)
-            }
-        }
-
-        if (!useOffline) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(text = "Select Preset Model URL:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Spacer(modifier = Modifier.height(6.dp))
-
-            presetModels.forEach { (name, url) ->
-                val isSelected = modelUrl == url
-                OutlinedCard(
-                    onClick = { onModelUrlChanged(url) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 3.dp),
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surface
-                    ),
-                    border = BorderStroke(
-                        width = if (isSelected) 2.dp else 1.dp,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(text = name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                        Text(text = url, style = MaterialTheme.typography.labelSmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-
-            if (isDownloading) {
-                Spacer(modifier = Modifier.height(12.dp))
-                LinearProgressIndicator(
-                    progress = { downloadProgress },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "${(downloadProgress * 100).toInt()}% - $downloadStatusText",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else if (downloadStatusText.isNotBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(text = downloadStatusText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-        }
-    }
-}
-
-@Composable
-fun SplashScreen(onLoadingFinished: () -> Unit) {
-    LaunchedEffect(Unit) {
-        delay(1200L)
-        onLoadingFinished()
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Default.Memory,
-                contentDescription = "Loading",
-                modifier = Modifier.size(80.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                text = "Initializing Neural Runtimes...",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            CircularProgressIndicator(
-                modifier = Modifier.size(30.dp),
-                strokeWidth = 3.dp
-            )
-        }
-    }
-}
-
-// --- Professional Chat Interface & Drawer ---
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun MainScreen(
-    status: String,
-    sessions: List<ChatSession>,
-    currentSessionId: Long?,
-    messages: List<ChatMessage>,
-    isGenerating: Boolean,
-    onSelectModel: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onNewChat: () -> Unit,
-    onSelectSession: (Long) -> Unit,
-    onSendPrompt: (String) -> Unit
-) {
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    var textInput by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(messages.size, isGenerating) {
-        if (messages.isNotEmpty() || isGenerating) {
-            listState.animateScrollToItem(if (isGenerating) messages.size else maxOf(0, messages.size - 1))
-        }
-    }
-
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Chat History", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-                Button(onClick = onNewChat, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                    Text("+ New Chat")
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider()
-                LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                    items(sessions) { session ->
-                        NavigationDrawerItem(
-                            label = { Text(session.title, maxLines = 1) },
-                            selected = session.id == currentSessionId,
-                            onClick = {
-                                onSelectSession(session.id)
-                                scope.launch { drawerState.close() }
-                            },
-                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                        )
-                    }
-                }
-            }
-        }
-    ) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Local AI") },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Menu")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
-                    }
-                )
-            }
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .padding(horizontal = 16.dp)
-            ) {
-                // Status Bar & Model Picker Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = status,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Material3 OutlinedButton guarantees proper touch event capture 
-                    // and bypasses parent drawer/gesture interceptor issues.
-                    OutlinedButton(
-                        onClick = onSelectModel,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.FolderOpen, 
-                            contentDescription = null, 
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Select Model",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(bottom = 8.dp))
-
-                // Professional Chat Bubbles Feed
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(vertical = 8.dp)
-                ) {
-                    items(messages) { msg ->
-                        val isUser = msg.role == "user"
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp),
-                            contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
-                        ) {
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isUser) 
-                                        MaterialTheme.colorScheme.primaryContainer 
-                                    else 
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                                shape = RoundedCornerShape(
-                                    topStart = 16.dp,
-                                    topEnd = 16.dp,
-                                    bottomStart = if (isUser) 16.dp else 4.dp,
-                                    bottomEnd = if (isUser) 4.dp else 16.dp
-                                ),
-                                modifier = Modifier.widthIn(max = 300.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        text = if (isUser) "You" else "Assistant",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = msg.content,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Pulsing Typing Indicator During Token Stream Generation
-                    if (isGenerating) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 4.dp),
-                                contentAlignment = Alignment.CenterStart
-                            ) {
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                    ),
-                                    shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(14.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Text(
-                                            text = "Generating response...",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Chat Input and Action Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = textInput,
-                        onValueChange = { textInput = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("Type a message...") },
-                        maxLines = 4,
-                        shape = RoundedCornerShape(24.dp)
-                    )
-                    IconButton(
-                        onClick = {
-                            if (textInput.isNotBlank()) {
-                                onSendPrompt(textInput)
-                                textInput = ""
-                            }
-                        },
-                        enabled = !isGenerating && textInput.isNotBlank(),
-                        modifier = Modifier
-                            .size(50.dp)
-                            .background(
-                                color = if (!isGenerating && textInput.isNotBlank()) 
-                                    MaterialTheme.colorScheme.primary 
-                                else 
-                                    MaterialTheme.colorScheme.surfaceVariant,
-                                shape = CircleShape
-                            )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Send,
-                            contentDescription = "Send",
-                            tint = if (!isGenerating && textInput.isNotBlank()) 
-                                MaterialTheme.colorScheme.onPrimary 
-                            else 
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
+                        description = "R

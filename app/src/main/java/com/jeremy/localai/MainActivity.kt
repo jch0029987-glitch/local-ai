@@ -446,6 +446,7 @@ fun ModelManagerScreen(
 }
 
 // --- Intelligent Onboarding with Background Download Integration ---
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
     val pagerState = rememberPagerState(pageCount = { 4 })
@@ -553,7 +554,6 @@ fun OnboardingPageView(title: String, description: String) {
     }
 }
 
-// Dummy composables to satisfy reference completeness if missing in other files
 @Composable
 fun SplashScreen(onLoadingFinished: () -> Unit) {
     LaunchedEffect(Unit) {

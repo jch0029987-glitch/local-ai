@@ -79,28 +79,15 @@ jobs:
         }
         EOF
 
-    - name: Commit and Push update.json to Main and ui-rewrite
+    - name: Commit and Push update.json to Main
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # 1. Commit, rebase remote changes, and push on main
         git add update.json version.properties
-        git commit -m "Auto-update update.json and version for ${{ steps.vars.outputs.version_name }} on main" || echo "No changes on main"
+        git commit -m "Auto-update update.json and version for ${{ steps.vars.outputs.version_name }}" || echo "No changes to commit"
         git pull --rebase origin main || true
         git push origin HEAD:main
-
-        # 2. Push update.json and version.properties to ui-rewrite using an isolated worktree
-        git fetch origin ui-rewrite
-        git worktree add ../ui-rewrite-tree origin/ui-rewrite
-        cp update.json ../ui-rewrite-tree/update.json
-        cp version.properties ../ui-rewrite-tree/version.properties
-        cd ../ui-rewrite-tree
-        git add update.json version.properties
-        git commit -m "Auto-update update.json and version for ${{ steps.vars.outputs.version_name }} on ui-rewrite" || echo "No changes on ui-rewrite"
-        git push origin ui-rewrite
-        cd ..
-        git worktree remove ../ui-rewrite-tree --force
 
     - name: Upload Signed APK Artifact
       uses: actions/upload-artifact@v4

@@ -36,6 +36,13 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
+    - name: Set Version Properties
+      run: |
+        VERSION_TAG="${{ inputs.version_name }}"
+        VERSION_CODE=$(date +%s)
+        echo "VERSION_CODE=$VERSION_CODE" > version.properties
+        echo "VERSION_NAME=$VERSION_TAG" >> version.properties
+
     - name: Restore Keystore and Properties
       env:
         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -52,12 +59,12 @@ jobs:
     - name: Build Signed Release APK
       run: ./gradlew assembleRelease 
 
-    - name: Extract Version Info
+    - name: Extract Version Info for Outputs
       id: vars
       run: |
         VERSION_TAG="${{ inputs.version_name }}"
+        VERSION_CODE=$(grep VERSION_CODE version.properties | cut -d '=' -f2)
         echo "version_name=$VERSION_TAG" >> $GITHUB_OUTPUT
-        VERSION_CODE=$(date +%s)
         echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
         echo "tag=v$VERSION_TAG" >> $GITHUB_OUTPUT
 
@@ -78,17 +85,18 @@ jobs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
         # 1. Commit and push on main
-        git add update.json
-        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on main" || echo "No changes on main"
+        git add update.json version.properties
+        git commit -m "Auto-update update.json and version for ${{ steps.vars.outputs.version_name }} on main" || echo "No changes on main"
         git push origin HEAD:main
 
-        # 2. Push update.json to ui-rewrite using an isolated worktree to prevent add/add file conflicts
+        # 2. Push update.json to ui-rewrite using an isolated worktree
         git fetch origin ui-rewrite
         git worktree add ../ui-rewrite-tree origin/ui-rewrite
         cp update.json ../ui-rewrite-tree/update.json
+        cp version.properties ../ui-rewrite-tree/version.properties
         cd ../ui-rewrite-tree
-        git add update.json
-        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on ui-rewrite" || echo "No changes on ui-rewrite"
+        git add update.json version.properties
+        git commit -m "Auto-update update.json and version for ${{ steps.vars.outputs.version_name }} on ui-rewrite" || echo "No changes on ui-rewrite"
         git push origin ui-rewrite
         cd ..
         git worktree remove ../ui-rewrite-tree --force

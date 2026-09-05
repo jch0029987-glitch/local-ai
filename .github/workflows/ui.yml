@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version Name (e.g. 1.0.1)'
+        required: true
+        default: '1.0.1'
+        type: string
 
 permissions:
   contents: write
@@ -52,14 +58,17 @@ jobs:
     - name: Extract Version Info
       id: vars
       run: |
-        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-          VERSION_TAG=${GITHUB_REF#refs/tags/v}
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          VERSION_TAG="${{ inputs.version_name }}"
+        elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          VERSION_TAG="${{ github.ref_name#v }}"
         else
           VERSION_TAG="1.0.$(date +%s)"
         fi
         echo "version_name=$VERSION_TAG" >> $GITHUB_OUTPUT
         VERSION_CODE=$(date +%s)
         echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+        echo "tag=v$VERSION_TAG" >> $GITHUB_OUTPUT
 
     - name: Generate update.json Metadata
       run: |
@@ -67,13 +76,12 @@ jobs:
         {
           "versionCode": ${{ steps.vars.outputs.version_code }},
           "versionName": "${{ steps.vars.outputs.version_name }}",
-          "downloadUrl": "https://github.com/${{ github.repository }}/releases/download/v${{ steps.vars.outputs.version_name }}/app-release.apk",
+          "downloadUrl": "https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/app-release.apk",
           "releaseNotes": "Automated update release for version ${{ steps.vars.outputs.version_name }}"
         }
         EOF
 
     - name: Commit and Push update.json to Main
-      if: startsWith(github.ref, 'refs/tags/v')
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -88,11 +96,11 @@ jobs:
         path: app/build/outputs/apk/release/app-release.apk
 
     - name: Create GitHub Release and Upload Asset
-      if: startsWith(github.ref, 'refs/tags/v')
       uses: softprops/action-gh-release@v2
       with:
         files: app/build/outputs/apk/release/app-release.apk
-        name: Release v${{ steps.vars.outputs.version_name }}
+        tag_name: ${{ steps.vars.outputs.tag }}
+        name: Release ${{ steps.vars.outputs.tag }}
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

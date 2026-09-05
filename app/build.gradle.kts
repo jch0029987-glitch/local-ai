@@ -1,6 +1,16 @@
 import java.util.Properties
 import java.io.FileInputStream
 
+val versionPropsFile = rootProject.file("version.properties")
+val versionProps = Properties().apply {
+    if (versionPropsFile.exists()) {
+        load(FileInputStream(versionPropsFile))
+    }
+}
+
+val appVersionCode = versionProps.getProperty("VERSION_CODE", "1").toInt()
+val appVersionName = versionProps.getProperty("VERSION_NAME", "1.0")
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -21,8 +31,8 @@ android {
         applicationId = "com.jeremy.localai"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         

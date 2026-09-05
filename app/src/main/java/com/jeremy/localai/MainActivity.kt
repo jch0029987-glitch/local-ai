@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -178,7 +180,7 @@ object UpdateChecker {
                     releaseNotes = json.getString("releaseNotes")
                 )
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -227,7 +229,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize libsu configuration
         Shell.setDefaultBuilder(
             Shell.Builder.create()
                 .setFlags(Shell.FLAG_REDIRECT_STDERR)
@@ -291,7 +292,7 @@ class MainActivity : ComponentActivity() {
     private fun checkRootAccess() {
         try {
             isRootGranted = Shell.isRootPermissionGranted() || Shell.getShell().isRoot
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             isRootGranted = false
         }
     }
@@ -339,7 +340,7 @@ class MainActivity : ComponentActivity() {
                 ggufEngine.loadModel(path, options)
                 currentEngine = ggufEngine
                 withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 withContext(Dispatchers.Main) { statusText = "Status: Auto-load failed" }
             }
         }
@@ -531,8 +532,8 @@ fun AppRootNavigation(
         }
         composable(AppScreen.UpdateScreen.route) {
             UpdateScreen(
-                currentVersionCode = 1, // Update to match your current app versionCode
-                updateJsonUrl = "https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/update.json",
+                currentVersionCode = 1,
+                updateJsonUrl = "https://raw.githubusercontent.com/jch0029987-glitch/local-ai/ui-rewrite/update.json",
                 onBackClicked = { navController.popBackStack() }
             )
         }
@@ -542,11 +543,19 @@ fun AppRootNavigation(
 // --- Software Update Screen ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UpdateScreen(currentVersionCode: Int, updateJsonUrl: String, onBackClicked: () -> Unit) {
+fun UpdateScreen(
+    currentVersionCode: Int,
+    updateJsonUrl: String,
+    onBackClicked: () -> Unit
+) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var isLoading by remember { mutableStateOf(true) }
+    var isDownloading by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Checking for updates...") }
+    var progressText by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         val info = UpdateChecker.fetchLatestVersion(updateJsonUrl)
@@ -572,7 +581,10 @@ fun UpdateScreen(currentVersionCode: Int, updateJsonUrl: String, onBackClicked: 
         }
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -581,22 +593,105 @@ fun UpdateScreen(currentVersionCode: Int, updateJsonUrl: String, onBackClicked: 
                     CircularProgressIndicator()
                 }
             } else {
-                Text(text = statusText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+
                 updateInfo?.let { info ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Version: ${info.versionName} (${info.versionCode})", fontWeight = FontWeight.Bold)
-                            Text("Changes: ${info.releaseNotes}", style = MaterialTheme.typography.bodyMedium)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Latest Version: ${info.versionName} (${info.versionCode})",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Release Notes:\n${info.releaseNotes}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
 
-                    if (info.versionCode > currentVersionCode) {
-                        Button(
-                            onClick = { /* Handle APK download & install intent */ },
-                            modifier = Modifier.fillMaxWidth().height(56.dp)
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    if (isDownloading) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Download and Install Update")
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text(text = progressText, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
+                    if (info.versionCode > currentVersionCode && !isDownloading) {
+                        Button(
+                            onClick = {
+                                if (!context.packageManager.canRequestPackageInstalls()) {
+                                    val permissionIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                    context.startActivity(permissionIntent)
+                                    return@Button
+                                }
+
+                                isDownloading = true
+                                progressText = "Downloading update APK..."
+
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    try {
+                                        val client = OkHttpClient()
+                                        val request = Request.Builder().url(info.downloadUrl).build()
+                                        val response = client.newCall(request).execute()
+
+                                        val apkFile = File(context.cacheDir, "update.apk")
+                                        response.body?.byteStream()?.use { input ->
+                                            FileOutputStream(apkFile).use { output ->
+                                                input.copyTo(output)
+                                            }
+                                        }
+
+                                        val apkUri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            apkFile
+                                        )
+
+                                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                                            setDataAndType(apkUri, "application/vnd.android.package-archive")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+
+                                        withContext(Dispatchers.Main) {
+                                            isDownloading = false
+                                            progressText = "Launching installer..."
+                                            context.startActivity(intent)
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) {
+                                            isDownloading = false
+                                            progressText = "Download failed: ${e.localizedMessage}"
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text("Download and Install Update", style = MaterialTheme.typography.titleMedium)
                         }
                     }
                 }

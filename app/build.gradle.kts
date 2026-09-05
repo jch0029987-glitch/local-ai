@@ -118,5 +118,12 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Core shell component
+    implementation("com.github.topjohnwu.libsu:core:6.0.0")
+    
+    // Optional: If you plan to use root services / IPC
+    implementation("com.github.topjohnwu.libsu:service:6.0.0")
+}
+
 
 }

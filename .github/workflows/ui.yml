@@ -50,7 +50,7 @@ jobs:
         echo "keyAlias=localai-new-alias" >> key.properties
 
     - name: Build Signed Release APK
-      run: ./gradlew assembleRelease --no-daemon
+      run: ./gradlew assembleRelease 
 
     - name: Extract Version Info
       id: vars

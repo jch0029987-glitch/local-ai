@@ -84,12 +84,13 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # 1. Commit and push on main
+        # 1. Commit, rebase remote changes, and push on main
         git add update.json version.properties
         git commit -m "Auto-update update.json and version for ${{ steps.vars.outputs.version_name }} on main" || echo "No changes on main"
+        git pull --rebase origin main || true
         git push origin HEAD:main
 
-        # 2. Push update.json to ui-rewrite using an isolated worktree
+        # 2. Push update.json and version.properties to ui-rewrite using an isolated worktree
         git fetch origin ui-rewrite
         git worktree add ../ui-rewrite-tree origin/ui-rewrite
         cp update.json ../ui-rewrite-tree/update.json

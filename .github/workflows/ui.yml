@@ -1,9 +1,6 @@
 name: Build and Release Android APK
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version_name:
@@ -58,13 +55,7 @@ jobs:
     - name: Extract Version Info
       id: vars
       run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          VERSION_TAG="${{ inputs.version_name }}"
-        elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-          VERSION_TAG="${{ github.ref_name#v }}"
-        else
-          VERSION_TAG="1.0.$(date +%s)"
-        fi
+        VERSION_TAG="${{ inputs.version_name }}"
         echo "version_name=$VERSION_TAG" >> $GITHUB_OUTPUT
         VERSION_CODE=$(date +%s)
         echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
@@ -81,13 +72,23 @@ jobs:
         }
         EOF
 
-    - name: Commit and Push update.json to Main
+    - name: Commit and Push update.json to Main and ui-rewrite
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Push to main
         git add update.json
-        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }}"
+        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on main"
         git push origin HEAD:main
+
+        # Push to ui-rewrite
+        git fetch origin ui-rewrite || git checkout -b ui-rewrite
+        git checkout ui-rewrite || git checkout -b ui-rewrite origin/ui-rewrite
+        git checkout main -- update.json
+        git add update.json
+        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on ui-rewrite" || echo "No changes to commit on ui-rewrite"
+        git push origin ui-rewrite
 
     - name: Upload Signed APK Artifact
       uses: actions/upload-artifact@v4
@@ -98,7 +99,9 @@ jobs:
     - name: Create GitHub Release and Upload Asset
       uses: softprops/action-gh-release@v2
       with:
-        files: app/build/outputs/apk/release/app-release.apk
+        files: |
+          app/build/outputs/apk/release/app-release.apk
+          update.json
         tag_name: ${{ steps.vars.outputs.tag }}
         name: Release ${{ steps.vars.outputs.tag }}
         generate_release_notes: true

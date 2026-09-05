@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -34,6 +35,7 @@ import com.jeremy.localai.db.ChatSession
 import com.jeremy.localai.engine.AiEngine
 import com.jeremy.localai.engine.EngineOptions
 import com.jeremy.localai.engine.LiteRtEngine
+import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -42,9 +44,12 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.codeshipping.llamakotlin.LlamaModel
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.text.DecimalFormat
@@ -112,21 +117,79 @@ object ModelDownloader {
     }
 }
 
-// --- App Preferences for Onboarding & Setup State ---
+// --- Hugging Face Live Search Utility ---
+data class HuggingFaceModelItem(
+    val modelId: String,
+    val downloads: Int,
+    val downloadUrl: String
+)
+
+object HuggingFaceHub {
+    private val client = OkHttpClient()
+
+    suspend fun searchGgufModels(query: String = "instruct"): List<HuggingFaceModelItem> = withContext(Dispatchers.IO) {
+        val url = "https://huggingface.co/api/models".toHttpUrl().newBuilder()
+            .addQueryParameter("search", if (query.contains("GGUF", ignoreCase = true)) query else "$query GGUF")
+            .addQueryParameter("sort", "downloads")
+            .addQueryParameter("direction", "-1")
+            .addQueryParameter("limit", "15")
+            .build()
+
+        val request = Request.Builder().url(url).build()
+        val results = mutableListOf<HuggingFaceModelItem>()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val responseBody = response.body?.string() ?: return@withContext emptyList()
+                val jsonArray = JSONArray(responseBody)
+
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val modelId = obj.getString("id")
+                    val downloads = obj.optInt("downloads", 0)
+                    val directUrl = "https://huggingface.co/$modelId/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+                    results.add(HuggingFaceModelItem(modelId, downloads, directUrl))
+                }
+            }
+        } catch (_: Exception) {}
+
+        results
+    }
+}
+
+// --- App Update Checker Utility ---
+data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String, val releaseNotes: String)
+
+object UpdateChecker {
+    private val client = OkHttpClient()
+
+    suspend fun fetchLatestVersion(jsonUrl: String): UpdateInfo? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder().url(jsonUrl).build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                val json = JSONObject(body)
+                UpdateInfo(
+                    versionCode = json.getInt("versionCode"),
+                    versionName = json.getString("versionName"),
+                    downloadUrl = json.getString("downloadUrl"),
+                    releaseNotes = json.getString("releaseNotes")
+                )
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
 class AppPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("local_ai_prefs", Context.MODE_PRIVATE)
 
     var hasSeenOnboarding: Boolean
         get() = prefs.getBoolean("has_seen_onboarding", false)
         set(value) = prefs.edit().putBoolean("has_seen_onboarding", value).apply()
-
-    var useOfflineMode: Boolean
-        get() = prefs.getBoolean("use_offline_mode", true)
-        set(value) = prefs.edit().putBoolean("use_offline_mode", value).apply()
-        
-    var selectedModelUrl: String
-        get() = prefs.getString("selected_model_url", "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf") ?: ""
-        set(value) = prefs.edit().putString("selected_model_url", value).apply()
 }
 
 sealed class AppScreen(val route: String) {
@@ -135,6 +198,7 @@ sealed class AppScreen(val route: String) {
     object MainHub : AppScreen("main_hub")
     object ModelManager : AppScreen("model_manager")
     object ModelDownloaderHub : AppScreen("model_downloader_hub")
+    object UpdateScreen : AppScreen("update_screen")
 }
 
 class MainActivity : ComponentActivity() {
@@ -145,6 +209,7 @@ class MainActivity : ComponentActivity() {
 
     private var statusText by mutableStateOf("Status: Model Unloaded")
     private var isGenerating by mutableStateOf(false)
+    private var isRootGranted by mutableStateOf(false)
     
     private var sessionsState = mutableStateOf<List<ChatSession>>(emptyList())
     private var currentSessionId by mutableStateOf<Long?>(null)
@@ -161,6 +226,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize libsu configuration
+        Shell.setDefaultBuilder(
+            Shell.Builder.create()
+                .setFlags(Shell.FLAG_REDIRECT_STDERR)
+                .setTimeout(10)
+        )
+        checkRootAccess()
 
         val defaultModelFile = File(filesDir, "imported_model.gguf")
         if (defaultModelFile.exists() && modelPath == null) {
@@ -202,6 +275,7 @@ class MainActivity : ComponentActivity() {
                         currentSessionId = currentSessionId,
                         messages = messagesState.value,
                         isGenerating = isGenerating,
+                        isRootGranted = isRootGranted,
                         onTriggerFilePicker = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
@@ -211,6 +285,14 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    private fun checkRootAccess() {
+        try {
+            isRootGranted = Shell.isRootPermissionGranted() || Shell.getShell().isRoot
+        } catch (e: Exception) {
+            isRootGranted = false
         }
     }
 
@@ -373,6 +455,7 @@ fun AppRootNavigation(
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
+    isRootGranted: Boolean,
     onTriggerFilePicker: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
@@ -418,7 +501,9 @@ fun AppRootNavigation(
                 currentSessionId = currentSessionId,
                 messages = messages,
                 isGenerating = isGenerating,
+                isRootGranted = isRootGranted,
                 onNavigateToModelManager = { navController.navigate(AppScreen.ModelManager.route) },
+                onNavigateToUpdates = { navController.navigate(AppScreen.UpdateScreen.route) },
                 onOpenSettings = onOpenSettings,
                 onNewChat = onNewChat,
                 onSelectSession = onSelectSession,
@@ -435,14 +520,87 @@ fun AppRootNavigation(
         }
         composable(AppScreen.ModelDownloaderHub.route) {
             ModelDownloadScreen(
-                titleText = "Model Downloader",
-                subtitleText = "Fetch optimized models directly from verified remote repositories.",
+                titleText = "Hugging Face Model Hub",
+                subtitleText = "Search and download GGUF models directly from live repositories.",
                 onDownloadComplete = { savedPath ->
                     onModelPathReady(savedPath)
                     navController.popBackStack()
                 },
                 onBackClicked = { navController.popBackStack() }
             )
+        }
+        composable(AppScreen.UpdateScreen.route) {
+            UpdateScreen(
+                currentVersionCode = 1, // Update to match your current app versionCode
+                updateJsonUrl = "https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/update.json",
+                onBackClicked = { navController.popBackStack() }
+            )
+        }
+    }
+}
+
+// --- Software Update Screen ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UpdateScreen(currentVersionCode: Int, updateJsonUrl: String, onBackClicked: () -> Unit) {
+    val coroutineScope = rememberCoroutineScope()
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var statusText by remember { mutableStateOf("Checking for updates...") }
+
+    LaunchedEffect(Unit) {
+        val info = UpdateChecker.fetchLatestVersion(updateJsonUrl)
+        updateInfo = info
+        isLoading = false
+        statusText = if (info != null && info.versionCode > currentVersionCode) {
+            "New update available!"
+        } else {
+            "You are running the latest version."
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Software Update") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClicked) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                Text(text = statusText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                
+                updateInfo?.let { info ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Version: ${info.versionName} (${info.versionCode})", fontWeight = FontWeight.Bold)
+                            Text("Changes: ${info.releaseNotes}", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    if (info.versionCode > currentVersionCode) {
+                        Button(
+                            onClick = { /* Handle APK download & install intent */ },
+                            modifier = Modifier.fillMaxWidth().height(56.dp)
+                        ) {
+                            Text("Download and Install Update")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -516,26 +674,33 @@ fun ModelManagerScreen(
     }
 }
 
-// --- Shared Reusable Model Download Screen ---
+// --- Searchable Model Download Screen ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModelDownloadScreen(
-    titleText: String = "Download Model",
-    subtitleText: String = "Select an optimized neural model to download directly to local storage.",
+    titleText: String = "Hugging Face Model Hub",
+    subtitleText: String = "Search and download GGUF models directly from live repositories.",
     onDownloadComplete: (String) -> Unit,
     onBackClicked: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    val modelName = "Qwen 2.5 (1.5B Instruct GGUF)"
-    val modelUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    val estimatedSize = "~986 MB"
+    var searchQuery by remember { mutableStateOf("Qwen 2.5") }
+    var searchResults by remember { mutableStateOf<List<HuggingFaceModelItem>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
 
+    var selectedModel by remember { mutableStateOf<HuggingFaceModelItem?>(null) }
     var isDownloading by remember { mutableStateOf(false) }
     var progressPercent by remember { mutableStateOf(0f) }
     var progressDetailsText by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        isSearching = true
+        searchResults = HuggingFaceHub.searchGgufModels(searchQuery)
+        isSearching = false
+    }
 
     Scaffold(
         topBar = {
@@ -555,68 +720,149 @@ fun ModelDownloadScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(24.dp),
+                .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (onBackClicked == null) {
                 Text(
                     text = titleText,
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            Text(
-                text = subtitleText,
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Card(
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(text = modelName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Badge { Text(estimatedSize) }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Optimized for fast local mobile inference with full on-device intelligence.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Search model (e.g. Llama, Phi, Qwen)") },
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            isSearching = true
+                            searchResults = HuggingFaceHub.searchGgufModels(searchQuery)
+                            isSearching = false
+                        }
+                    },
+                    modifier = Modifier.height(56.dp)
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = "Search")
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
-
             if (isDownloading) {
-                Column(
+                Card(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
-                    LinearProgressIndicator(
-                        progress = { progressPercent / 100f },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                    )
-                    Text(
-                        text = progressDetailsText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Downloading: ${selectedModel?.modelId ?: "Model"}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        LinearProgressIndicator(
+                            progress = { progressPercent / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                        )
+                        Text(
+                            text = progressDetailsText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = "Select a model to download:",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.align(Alignment.Start)
+                )
+
+                if (isSearching) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(searchResults) { item ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedModel = item
+                                        isDownloading = true
+                                        errorMessage = null
+                                        coroutineScope.launch {
+                                            ModelDownloader.downloadModel(
+                                                context,
+                                                item.downloadUrl,
+                                                "imported_model.gguf"
+                                            ).collect { state ->
+                                                when (state) {
+                                                    is DownloadState.Progress -> {
+                                                        progressPercent = state.percent
+                                                        val downloadedFormatted = ModelDownloader.formatSize(state.progressBytes)
+                                                        val totalFormatted = ModelDownloader.formatSize(state.totalBytes)
+                                                        progressDetailsText = "Downloading... $downloadedFormatted / $totalFormatted (${state.percent.toInt()}%)"
+                                                    }
+                                                    is DownloadState.Success -> {
+                                                        isDownloading = false
+                                                        onDownloadComplete(state.file.absolutePath)
+                                                    }
+                                                    is DownloadState.Error -> {
+                                                        isDownloading = false
+                                                        errorMessage = state.message
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = item.modelId,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Downloads: ${item.downloads}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = "Tap to Download",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -626,45 +872,6 @@ fun ModelDownloadScreen(
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center
-                )
-            }
-
-            Button(
-                onClick = {
-                    isDownloading = true
-                    errorMessage = null
-                    coroutineScope.launch {
-                        ModelDownloader.downloadModel(context, modelUrl, "imported_model.gguf").collect { state ->
-                            when (state) {
-                                is DownloadState.Progress -> {
-                                    progressPercent = state.percent
-                                    val downloadedFormatted = ModelDownloader.formatSize(state.progressBytes)
-                                    val totalFormatted = ModelDownloader.formatSize(state.totalBytes)
-                                    progressDetailsText = "Downloading... $downloadedFormatted / $totalFormatted (${state.percent.toInt()}%)"
-                                }
-                                is DownloadState.Success -> {
-                                    isDownloading = false
-                                    onDownloadComplete(state.file.absolutePath)
-                                }
-                                is DownloadState.Error -> {
-                                    isDownloading = false
-                                    errorMessage = state.message
-                                }
-                            }
-                        }
-                    }
-                },
-                enabled = !isDownloading,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Icon(Icons.Default.Download, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (isDownloading) "Downloading Model..." else "Download & Initialize",
-                    style = MaterialTheme.typography.titleMedium
                 )
             }
         }
@@ -810,7 +1017,9 @@ fun MainScreen(
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
+    isRootGranted: Boolean,
     onNavigateToModelManager: () -> Unit,
+    onNavigateToUpdates: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
@@ -824,6 +1033,9 @@ fun MainScreen(
             TopAppBar(
                 title = { Text("Local AI Hub") },
                 actions = {
+                    IconButton(onClick = onNavigateToUpdates) {
+                        Icon(Icons.Default.SystemUpdate, contentDescription = "Check Updates")
+                    }
                     IconButton(onClick = onNavigateToModelManager) {
                         Icon(Icons.Default.Storage, contentDescription = "Model Manager")
                     }
@@ -840,7 +1052,18 @@ fun MainScreen(
                 .padding(padding)
                 .padding(12.dp)
         ) {
-            Text(text = status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Badge(
+                    containerColor = if (isRootGranted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+                ) {
+                    Text(text = if (isRootGranted) "Root: Active" else "Root: Unprivileged")
+                }
+            }
             Spacer(modifier = Modifier.height(8.dp))
 
             LazyColumn(

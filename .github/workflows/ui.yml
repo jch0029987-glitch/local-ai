@@ -77,20 +77,21 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # Push to main with rebase guard
+        # 1. Commit and push on main
         git add update.json
-        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on main" || echo "No changes to commit on main"
-        git pull --rebase origin main || true
+        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on main" || echo "No changes on main"
         git push origin HEAD:main
 
-        # Push to ui-rewrite with rebase guard
-        git fetch origin ui-rewrite || git checkout -b ui-rewrite
-        git checkout ui-rewrite || git checkout -b ui-rewrite origin/ui-rewrite
-        git checkout main -- update.json
+        # 2. Push update.json to ui-rewrite using an isolated worktree to prevent add/add file conflicts
+        git fetch origin ui-rewrite
+        git worktree add ../ui-rewrite-tree origin/ui-rewrite
+        cp update.json ../ui-rewrite-tree/update.json
+        cd ../ui-rewrite-tree
         git add update.json
-        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on ui-rewrite" || echo "No changes to commit on ui-rewrite"
-        git pull --rebase origin ui-rewrite || true
+        git commit -m "Auto-update update.json for version ${{ steps.vars.outputs.version_name }} on ui-rewrite" || echo "No changes on ui-rewrite"
         git push origin ui-rewrite
+        cd ..
+        git worktree remove ../ui-rewrite-tree --force
 
     - name: Upload Signed APK Artifact
       uses: actions/upload-artifact@v4

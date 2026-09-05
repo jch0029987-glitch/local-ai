@@ -290,10 +290,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkRootAccess() {
-        try {
-            isRootGranted = Shell.isRootPermissionGranted() || Shell.getShell().isRoot
-        } catch (_: Exception) {
-            isRootGranted = false
+        Shell.getShell { shell ->
+            isRootGranted = shell.isRoot
         }
     }
 

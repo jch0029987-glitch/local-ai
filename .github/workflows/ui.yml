@@ -1,11 +1,7 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [ "ui-rewrite" ]
-  pull_request:
-    branches: [ "ui-rewrite" ]
-
+  
 jobs:
   build:
     runs-on: ubuntu-latest

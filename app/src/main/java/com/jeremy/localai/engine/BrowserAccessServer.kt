@@ -9,7 +9,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
 class BrowserAccessServer(private val port: Int) {
-    private var server: NettyApplicationEngine? = null
+    private var server: EmbeddedServer<*, *>? = null
 
     fun start() {
         if (server != null) return

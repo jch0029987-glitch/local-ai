@@ -1,4 +1,4 @@
-package com.jeremy.localai
+Package com.jeremy.localai
 
 import android.content.Context
 import android.content.Intent
@@ -587,8 +587,11 @@ fun UpdateScreen(onBackClicked: () -> Unit) {
                                 if (response.isSuccessful) {
                                     val bodyStr = response.body?.string() ?: ""
                                     val json = JSONObject(bodyStr)
-                                    remoteVersion = json.optString("version", "1.0.0")
-                                    apkUrl = json.optString("zipUrl", "")
+                                    
+                                    // Auto-detect version and download link fields flexibly
+                                    remoteVersion = json.optString("versionName", json.optString("version", "1.0.0"))
+                                    apkUrl = json.optString("downloadUrl", json.optString("apk", json.optString("zipUrl", "")))
+                                    
                                     updateAvailable = true
                                     withContext(Dispatchers.Main) {
                                         checkingStatus = "Update available: v$remoteVersion"

@@ -214,10 +214,12 @@ class MainActivity : ComponentActivity() {
 
         // Run Root Check on Startup via libsu
         lifecycleScope.launch(Dispatchers.IO) {
-            val hasRoot = Shell.isRootUser()
+            val hasRoot = Shell.getShell().isRoot
             withContext(Dispatchers.Main) {
                 if (hasRoot) {
                     statusText = "Status: Root access verified via libsu"
+                } else {
+                    statusText = "Status: Root access unavailable"
                 }
             }
         }

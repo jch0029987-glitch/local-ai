@@ -1,4 +1,4 @@
-Import java.util.Properties
+import java.util.Properties
 import java.io.FileInputStream
 
 val versionPropsFile = rootProject.file("version.properties")

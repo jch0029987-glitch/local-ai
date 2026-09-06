@@ -1,4 +1,4 @@
-Package com.jeremy.localai
+package com.jeremy.localai
 
 import android.content.Context
 import android.content.Intent

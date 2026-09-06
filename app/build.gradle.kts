@@ -1,4 +1,4 @@
-import java.util.Properties
+Import java.util.Properties
 import java.io.FileInputStream
 
 val versionPropsFile = rootProject.file("version.properties")
@@ -90,6 +90,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging {
+        resources.excludes += "META-INF/INDEX.LIST"
+        resources.excludes += "META-INF/io.netty.versions.properties"
+    }
 }
 
 dependencies {
@@ -137,5 +142,3 @@ dependencies {
     implementation("io.ktor:ktor-server-core:3.5.2")
     implementation("io.ktor:ktor-server-netty:3.5.2")
 }
-
-

@@ -59,7 +59,7 @@ jobs:
     - name: Build Release APK
       run: ./gradlew assembleRelease -PversionCode=${{ env.VERSION_CODE }} -PversionName=${{ github.event.inputs.version }}
 
-    - name: Generate and Push update.json
+    - name: Generate update.json
       run: |
         VERSION="${{ github.event.inputs.version }}"
         TAG="v$VERSION"
@@ -75,11 +75,13 @@ jobs:
         }
         EOF
 
+    - name: Commit and Push update.json
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
         git add update.json
         git commit -m "Auto-update update.json for version $VERSION" || echo "No changes to commit"
-        git pull origin main --rebase || true
         git push origin main
 
     - name: Create GitHub Release and Upload APK

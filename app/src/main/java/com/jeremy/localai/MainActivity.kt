@@ -4,10 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -26,7 +28,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -160,38 +161,21 @@ object HuggingFaceHub {
     }
 }
 
-// --- App Update Checker Utility ---
-data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String, val releaseNotes: String)
-
-object UpdateChecker {
-    private val client = OkHttpClient()
-
-    suspend fun fetchLatestVersion(jsonUrl: String): UpdateInfo? = withContext(Dispatchers.IO) {
-        try {
-            val request = Request.Builder().url(jsonUrl).build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
-                val body = response.body?.string() ?: return@withContext null
-                val json = JSONObject(body)
-                UpdateInfo(
-                    versionCode = json.getInt("versionCode"),
-                    versionName = json.getString("versionName"),
-                    downloadUrl = json.getString("downloadUrl"),
-                    releaseNotes = json.getString("releaseNotes")
-                )
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-}
-
+// --- App Preferences for Onboarding & Setup ---
 class AppPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("local_ai_prefs", Context.MODE_PRIVATE)
 
     var hasSeenOnboarding: Boolean
         get() = prefs.getBoolean("has_seen_onboarding", false)
         set(value) = prefs.edit().putBoolean("has_seen_onboarding", value).apply()
+
+    var useOfflineMode: Boolean
+        get() = prefs.getBoolean("use_offline_mode", true)
+        set(value) = prefs.edit().putBoolean("use_offline_mode", value).apply()
+        
+    var selectedModelUrl: String
+        get() = prefs.getString("selected_model_url", "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf") ?: ""
+        set(value) = prefs.edit().putString("selected_model_url", value).apply()
 }
 
 sealed class AppScreen(val route: String) {
@@ -211,7 +195,6 @@ class MainActivity : ComponentActivity() {
 
     private var statusText by mutableStateOf("Status: Model Unloaded")
     private var isGenerating by mutableStateOf(false)
-    private var isRootGranted by mutableStateOf(false)
     
     private var sessionsState = mutableStateOf<List<ChatSession>>(emptyList())
     private var currentSessionId by mutableStateOf<Long?>(null)
@@ -229,12 +212,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Shell.setDefaultBuilder(
-            Shell.Builder.create()
-                .setFlags(Shell.FLAG_REDIRECT_STDERR)
-                .setTimeout(10)
-        )
-        checkRootAccess()
+        // Run Root Check on Startup via libsu
+        lifecycleScope.launch(Dispatchers.IO) {
+            val hasRoot = Shell.isRootUser()
+            withContext(Dispatchers.Main) {
+                if (hasRoot) {
+                    statusText = "Status: Root access verified via libsu"
+                }
+            }
+        }
 
         val defaultModelFile = File(filesDir, "imported_model.gguf")
         if (defaultModelFile.exists() && modelPath == null) {
@@ -242,6 +228,7 @@ class MainActivity : ComponentActivity() {
             autoLoadStoredModel(defaultModelFile.absolutePath)
         }
 
+        // Load sessions list reactively from Room
         lifecycleScope.launch(Dispatchers.IO) {
             database.chatDao().getAllSessions().collectLatest { sessions ->
                 sessionsState.value = sessions
@@ -254,6 +241,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Load messages for current session dynamically from Room
         lifecycleScope.launch(Dispatchers.IO) {
             snapshotFlow { currentSessionId }.collectLatest { sessionId ->
                 if (sessionId != null) {
@@ -276,7 +264,6 @@ class MainActivity : ComponentActivity() {
                         currentSessionId = currentSessionId,
                         messages = messagesState.value,
                         isGenerating = isGenerating,
-                        isRootGranted = isRootGranted,
                         onTriggerFilePicker = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
@@ -286,12 +273,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-        }
-    }
-
-    private fun checkRootAccess() {
-        Shell.getShell { shell ->
-            isRootGranted = shell.isRoot
         }
     }
 
@@ -345,7 +326,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun importModelFile(uri: Uri) {
-        statusText = "Status: Importing file..."
+        statusText = "Importing model file..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val pathString = uri.toString()
@@ -370,13 +351,13 @@ class MainActivity : ComponentActivity() {
                 try { currentEngine?.close() } catch (_: Exception) {}
 
                 if (isLiteRt) {
-                    withContext(Dispatchers.Main) { statusText = "Status: Loading LiteRT-LM..." }
+                    withContext(Dispatchers.Main) { statusText = "Loading LiteRT-LM Engine..." }
                     val liteRtEngine = LiteRtEngine(this@MainActivity)
                     liteRtEngine.loadModel(modelPath!!, options)
                     currentEngine = liteRtEngine
                     withContext(Dispatchers.Main) { statusText = "Status: LiteRT-LM Ready" }
                 } else {
-                    withContext(Dispatchers.Main) { statusText = "Status: Loading GGUF Model..." }
+                    withContext(Dispatchers.Main) { statusText = "Loading GGUF Engine..." }
                     class GgufEngineWrapper : AiEngine {
                         private var model: LlamaModel? = null
                         override suspend fun loadModel(path: String, options: EngineOptions) {
@@ -400,7 +381,7 @@ class MainActivity : ComponentActivity() {
 
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    statusText = "Status: Load failed (${e.localizedMessage ?: "Unknown"})"
+                    statusText = "Load failed: ${e.localizedMessage}"
                 }
             }
         }
@@ -446,7 +427,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- App Root Navigation Router ---
+// --- Navigation & Router ---
 @Composable
 fun AppRootNavigation(
     status: String,
@@ -454,7 +435,6 @@ fun AppRootNavigation(
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
-    isRootGranted: Boolean,
     onTriggerFilePicker: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
@@ -475,9 +455,10 @@ fun AppRootNavigation(
     NavHost(navController = navController, startDestination = startDestination) {
         composable(AppScreen.Onboarding.route) {
             OnboardingScreen(
-                onFinished = { savedPath ->
+                onFinished = { offlineSelected, modelUrl ->
                     prefs.hasSeenOnboarding = true
-                    if (savedPath != null) onModelPathReady(savedPath)
+                    prefs.useOfflineMode = offlineSelected
+                    prefs.selectedModelUrl = modelUrl
                     navController.navigate(AppScreen.MainHub.route) {
                         popUpTo(AppScreen.Onboarding.route) { inclusive = true }
                     }
@@ -500,9 +481,8 @@ fun AppRootNavigation(
                 currentSessionId = currentSessionId,
                 messages = messages,
                 isGenerating = isGenerating,
-                isRootGranted = isRootGranted,
                 onNavigateToModelManager = { navController.navigate(AppScreen.ModelManager.route) },
-                onNavigateToUpdates = { navController.navigate(AppScreen.UpdateScreen.route) },
+                onNavigateToUpdate = { navController.navigate(AppScreen.UpdateScreen.route) },
                 onOpenSettings = onOpenSettings,
                 onNewChat = onNewChat,
                 onSelectSession = onSelectSession,
@@ -530,46 +510,30 @@ fun AppRootNavigation(
         }
         composable(AppScreen.UpdateScreen.route) {
             UpdateScreen(
-                currentVersionCode = 1,
-                updateJsonUrl = "https://raw.githubusercontent.com/jch0029987-glitch/local-ai/ui-rewrite/update.json",
                 onBackClicked = { navController.popBackStack() }
             )
         }
     }
 }
 
-// --- Software Update Screen ---
+// --- Dedicated Update Management Screen ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UpdateScreen(
-    currentVersionCode: Int,
-    updateJsonUrl: String,
-    onBackClicked: () -> Unit
-) {
+fun UpdateScreen(onBackClicked: () -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-
-    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
+    var checkingStatus by remember { mutableStateOf("Tap below to check for updates.") }
+    var updateAvailable by remember { mutableStateOf(false) }
+    var remoteVersion by remember { mutableStateOf("") }
+    var apkUrl by remember { mutableStateOf("") }
+    var isChecking by remember { mutableStateOf(false) }
     var isDownloading by remember { mutableStateOf(false) }
-    var statusText by remember { mutableStateOf("Checking for updates...") }
-    var progressText by remember { mutableStateOf("") }
-
-    LaunchedEffect(Unit) {
-        val info = UpdateChecker.fetchLatestVersion(updateJsonUrl)
-        updateInfo = info
-        isLoading = false
-        statusText = if (info != null && info.versionCode > currentVersionCode) {
-            "New update available!"
-        } else {
-            "You are running the latest version."
-        }
-    }
+    var downloadProgress by remember { mutableStateOf(0f) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Software Update") },
+                title = { Text("App Updates") },
                 navigationIcon = {
                     IconButton(onClick = onBackClicked) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
@@ -577,121 +541,159 @@ fun UpdateScreen(
                 }
             )
         }
-    ) { padding ->
+    ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(paddingValues)
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(text = "Current Status", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(text = checkingStatus, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                 }
-            } else {
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+            }
+
+            if (isDownloading) {
+                LinearProgressIndicator(
+                    progress = { downloadProgress },
+                    modifier = Modifier.fillMaxWidth()
                 )
+            }
 
-                updateInfo?.let { info ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Latest Version: ${info.versionName} (${info.versionCode})",
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Release Notes:\n${info.releaseNotes}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+            Spacer(modifier = Modifier.height(10.dp))
 
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    if (isDownloading) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(text = progressText, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-
-                    if (info.versionCode > currentVersionCode && !isDownloading) {
-                        Button(
-                            onClick = {
-                                if (!context.packageManager.canRequestPackageInstalls()) {
-                                    val permissionIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                        data = Uri.parse("package:${context.packageName}")
+            Button(
+                onClick = {
+                    isChecking = true
+                    checkingStatus = "Checking repository update.json..."
+                    coroutineScope.launch(Dispatchers.IO) {
+                        try {
+                            val client = OkHttpClient()
+                            val request = Request.Builder()
+                                .url("https://raw.githubusercontent.com/jch0029987-glitch/local-ai/main/update.json")
+                                .build()
+                            
+                            client.newCall(request).execute().use { response ->
+                                if (response.isSuccessful) {
+                                    val bodyStr = response.body?.string() ?: ""
+                                    val json = JSONObject(bodyStr)
+                                    remoteVersion = json.optString("version", "1.0.0")
+                                    apkUrl = json.optString("zipUrl", "")
+                                    updateAvailable = true
+                                    withContext(Dispatchers.Main) {
+                                        checkingStatus = "Update available: v$remoteVersion"
                                     }
-                                    context.startActivity(permissionIntent)
-                                    return@Button
+                                } else {
+                                    withContext(Dispatchers.Main) {
+                                        checkingStatus = "Failed to fetch update info (Code: ${response.code})"
+                                    }
                                 }
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                checkingStatus = "Error: ${e.localizedMessage}"
+                            }
+                        } finally {
+                            isChecking = false
+                        }
+                    }
+                },
+                enabled = !isChecking && !isDownloading,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                if (isChecking) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary)
+                } else {
+                    Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Check for Updates", style = MaterialTheme.typography.titleMedium)
+                }
+            }
 
-                                isDownloading = true
-                                progressText = "Downloading update APK..."
+            if (updateAvailable) {
+                Button(
+                    onClick = {
+                        if (apkUrl.isNotBlank()) {
+                            isDownloading = true
+                            checkingStatus = "Downloading APK update..."
+                            coroutineScope.launch(Dispatchers.IO) {
+                                try {
+                                    val client = OkHttpClient()
+                                    val request = Request.Builder().url(apkUrl).build()
+                                    val response = client.newCall(request).execute()
+                                    if (response.isSuccessful) {
+                                        val body = response.body
+                                        if (body != null) {
+                                            val apkFile = File(context.getExternalFilesDir(null), "update.apk")
+                                            val totalBytes = body.contentLength()
+                                            var downloaded = 0L
 
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    try {
-                                        val client = OkHttpClient()
-                                        val request = Request.Builder().url(info.downloadUrl).build()
-                                        val response = client.newCall(request).execute()
+                                            body.byteStream().use { input ->
+                                                FileOutputStream(apkFile).use { output ->
+                                                    val buffer = ByteArray(8192)
+                                                    var bytesRead: Int
+                                                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                                                        output.write(buffer, 0, bytesRead)
+                                                        downloaded += bytesRead
+                                                        if (totalBytes > 0) {
+                                                            downloadProgress = downloaded.toFloat() / totalBytes.toFloat()
+                                                        }
+                                                    }
+                                                }
+                                            }
 
-                                        val apkFile = File(context.cacheDir, "update.apk")
-                                        response.body?.byteStream()?.use { input ->
-                                            FileOutputStream(apkFile).use { output ->
-                                                input.copyTo(output)
+                                            withContext(Dispatchers.Main) {
+                                                checkingStatus = "Download complete. Launching installer..."
+                                                isDownloading = false
+                                                
+                                                val uri: Uri = FileProvider.getUriForFile(
+                                                    context,
+                                                    "${context.packageName}.fileprovider",
+                                                    apkFile
+                                                )
+                                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(uri, "application/vnd.android.package-archive")
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                context.startActivity(intent)
                                             }
                                         }
-
-                                        val apkUri = FileProvider.getUriForFile(
-                                            context,
-                                            "${context.packageName}.fileprovider",
-                                            apkFile
-                                        )
-
-                                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                                            setDataAndType(apkUri, "application/vnd.android.package-archive")
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-
+                                    } else {
                                         withContext(Dispatchers.Main) {
                                             isDownloading = false
-                                            progressText = "Launching installer..."
-                                            context.startActivity(intent)
-                                        }
-                                    } catch (e: Exception) {
-                                        withContext(Dispatchers.Main) {
-                                            isDownloading = false
-                                            progressText = "Download failed: ${e.localizedMessage}"
+                                            checkingStatus = "Download failed: ${response.code}"
                                         }
                                     }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        isDownloading = false
+                                        checkingStatus = "Download error: ${e.localizedMessage}"
+                                    }
                                 }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
-                            shape = RoundedCornerShape(16.dp)
-                        ) {
-                            Text("Download and Install Update", style = MaterialTheme.typography.titleMedium)
+                            }
                         }
-                    }
+                    },
+                    enabled = !isDownloading,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Download & Install APK", style = MaterialTheme.typography.titleMedium)
                 }
             }
         }
@@ -880,8 +882,9 @@ fun ModelDownloadScreen(
                 }
             } else {
                 Text(
-                    text = "Select a model to download:",
-                    style = MaterialTheme.typography.labelLarge,
+                    text = subtitleText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.Start)
                 )
 
@@ -971,12 +974,14 @@ fun ModelDownloadScreen(
     }
 }
 
-// --- Intelligent Onboarding with Optional Download Integration ---
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+// --- Onboarding & Setup UI Screens ---
 @Composable
-fun OnboardingScreen(onFinished: (String?) -> Unit) {
-    val pagerState = rememberPagerState(pageCount = { 4 })
+fun OnboardingScreen(onFinished: (Boolean, String) -> Unit) {
+    val pagerState = rememberPagerState(pageCount = { 3 })
     val coroutineScope = rememberCoroutineScope()
+
+    var useOffline by remember { mutableStateOf(true) }
+    var targetModelUrl by remember { mutableStateOf("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf") }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -997,63 +1002,59 @@ fun OnboardingScreen(onFinished: (String?) -> Unit) {
                 when (page) {
                     0 -> OnboardingPageView(
                         title = "100% Offline AI Execution",
-                        description = "Run powerful large language models locally on your device hardware without requiring an active cloud connection."
+                        description = "Run GGUF and LiteRT models natively utilizing your device's hardware acceleration without relying on cloud servers.",
+                        icon = Icons.Default.CloudOff
                     )
                     1 -> OnboardingPageView(
-                        title = "Private & Secure",
-                        description = "Your prompts, chat conversations, and data never leave your device storage. Complete total local privacy."
+                        title = "Zero Data Leakage",
+                        description = "Your prompts, session data, and private context remain securely inside your hardware environment.",
+                        icon = Icons.Default.Security
                     )
-                    2 -> OnboardingPageView(
-                        title = "High Performance",
-                        description = "Optimized via native hardware execution layers to ensure fast inference speeds and low thermal footprint."
+                    2 -> SetupConfigurationPageView(
+                        useOffline = useOffline,
+                        onOfflineChanged = { useOffline = it },
+                        modelUrl = targetModelUrl,
+                        onModelUrlChanged = { targetModelUrl = it }
                     )
-                    3 -> Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        ModelDownloadScreen(
-                            titleText = "Download Default Model (Optional)",
-                            subtitleText = "Fetch your initial local language model now, or skip and load one later.",
-                            onDownloadComplete = { savedPath ->
-                                onFinished(savedPath)
-                            }
-                        )
-                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                if (pagerState.currentPage == 3) {
-                    OutlinedButton(
-                        onClick = { onFinished(null) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Text("Skip for Now")
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    modifier = Modifier.padding(bottom = 24.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    repeat(3) { index ->
+                        Box(
+                            modifier = Modifier
+                                .padding(4.dp)
+                                .size(if (pagerState.currentPage == index) 12.dp else 8.dp)
+                                .background(
+                                    color = if (pagerState.currentPage == index) 
+                                        MaterialTheme.colorScheme.primary 
+                                    else 
+                                        MaterialTheme.colorScheme.outlineVariant,
+                                    shape = CircleShape
+                                )
+                        )
                     }
                 }
 
-                if (pagerState.currentPage < 3) {
-                    Button(
-                        onClick = {
+                Button(
+                    onClick = {
+                        if (pagerState.currentPage < 2) {
                             coroutineScope.launch {
                                 pagerState.animateScrollToPage(pagerState.currentPage + 1)
                             }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Text("Next", style = MaterialTheme.typography.titleMedium)
-                    }
+                        } else {
+                            onFinished(useOffline, targetModelUrl)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Text(text = if (pagerState.currentPage == 2) "Initialize App" else "Next")
                 }
             }
         }
@@ -1061,18 +1062,16 @@ fun OnboardingScreen(onFinished: (String?) -> Unit) {
 }
 
 @Composable
-fun OnboardingPageView(title: String, description: String) {
+fun OnboardingPageView(title: String, description: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
-            imageVector = Icons.Default.SmartToy,
+            imageVector = icon,
             contentDescription = null,
-            modifier = Modifier.size(96.dp),
+            modifier = Modifier.size(110.dp),
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(modifier = Modifier.height(32.dp))
@@ -1080,7 +1079,8 @@ fun OnboardingPageView(title: String, description: String) {
             text = title,
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
@@ -1093,16 +1093,104 @@ fun OnboardingPageView(title: String, description: String) {
 }
 
 @Composable
-fun SplashScreen(onLoadingFinished: () -> Unit) {
-    LaunchedEffect(Unit) {
-        delay(1200)
-        onLoadingFinished()
-    }
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
+fun SetupConfigurationPageView(
+    useOffline: Boolean,
+    onOfflineChanged: (Boolean) -> Unit,
+    modelUrl: String,
+    onModelUrlChanged: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "Engine Setup Options",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Configure how your local runtime acquires model weights.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Pure Offline Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(text = "I will manually manage my local GGUF/LiteRT files.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = useOffline, onCheckedChange = onOfflineChanged)
+            }
+        }
+
+        if (!useOffline) {
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedTextField(
+                value = modelUrl,
+                onValueChange = onModelUrlChanged,
+                label = { Text("Model Download URL (.gguf)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = false,
+                maxLines = 3,
+                shape = RoundedCornerShape(8.dp)
+            )
+        }
     }
 }
 
+@Composable
+fun SplashScreen(onLoadingFinished: () -> Unit) {
+    LaunchedEffect(Unit) {
+        delay(1800L)
+        onLoadingFinished()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Default.Memory,
+                contentDescription = "Engine Loading",
+                modifier = Modifier.size(80.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "Initializing Neural Runtimes...",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(30.dp),
+                strokeWidth = 3.dp
+            )
+        }
+    }
+}
+
+// --- MainScreen UI & Drawer ---
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     status: String,
@@ -1110,109 +1198,133 @@ fun MainScreen(
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
-    isRootGranted: Boolean,
     onNavigateToModelManager: () -> Unit,
-    onNavigateToUpdates: () -> Unit,
+    onNavigateToUpdate: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
     onSendPrompt: (String) -> Unit
 ) {
-    var inputPrompt by remember { mutableStateOf("") }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Local AI Hub") },
-                actions = {
-                    IconButton(onClick = onNavigateToUpdates) {
-                        Icon(Icons.Default.SystemUpdate, contentDescription = "Check Updates")
-                    }
-                    IconButton(onClick = onNavigateToModelManager) {
-                        Icon(Icons.Default.Storage, contentDescription = "Model Manager")
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                }
-            )
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
         }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Badge(
-                    containerColor = if (isRootGranted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
-                ) {
-                    Text(text = if (isRootGranted) "Root: Active" else "Root: Unprivileged")
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
+    }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(messages) { msg ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (msg.role == "user") 
-                                MaterialTheme.colorScheme.surfaceVariant 
-                            else 
-                                MaterialTheme.colorScheme.primaryContainer
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Chat History", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+                Button(onClick = onNewChat, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Text("+ New Chat")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    items(sessions) { session ->
+                        NavigationDrawerItem(
+                            label = { Text(session.title) },
+                            selected = session.id == currentSessionId,
+                            onClick = {
+                                onSelectSession(session.id)
+                                scope.launch { drawerState.close() }
+                            },
+                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                         )
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text(
-                                text = if (msg.role == "user") "You" else "Assistant",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(text = msg.content, style = MaterialTheme.typography.bodyMedium)
-                        }
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = inputPrompt,
-                    onValueChange = { inputPrompt = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Type a prompt...") },
-                    maxLines = 4
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(
-                    onClick = {
-                        if (inputPrompt.isNotBlank() && !isGenerating) {
-                            onSendPrompt(inputPrompt)
-                            inputPrompt = ""
+        }
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Local AI Hub") },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
                         }
                     },
-                    enabled = !isGenerating
+                    actions = {
+                        IconButton(onClick = onNavigateToUpdate) {
+                            Icon(Icons.Default.SystemUpdate, contentDescription = "Updates")
+                        }
+                        IconButton(onClick = onNavigateToModelManager) {
+                            Icon(Icons.Default.Storage, contentDescription = "Model Manager")
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                    }
+                )
+            }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(16.dp)
+            ) {
+                Text(text = status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = "Send")
+                    items(messages) { msg ->
+                        val isUser = msg.role == "user"
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isUser) MaterialTheme.colorScheme.primaryContainer 
+                                                 else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = if (isUser) "You" else "Assistant",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(text = msg.content, style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = textInput,
+                        onValueChange = { textInput = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Type a prompt...") },
+                        maxLines = 3
+                    )
+                    Button(
+                        onClick = {
+                            if (textInput.isNotBlank()) {
+                                onSendPrompt(textInput)
+                                textInput = ""
+                            }
+                        },
+                        enabled = !isGenerating && textInput.isNotBlank()
+                    ) {
+                        Text("Send")
+                    }
                 }
             }
         }

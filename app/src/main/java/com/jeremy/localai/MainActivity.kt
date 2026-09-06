@@ -186,6 +186,7 @@ sealed class AppScreen(val route: String) {
     object ModelManager : AppScreen("model_manager")
     object ModelDownloaderHub : AppScreen("model_downloader_hub")
     object UpdateScreen : AppScreen("update_screen")
+    object ServerControl : AppScreen("server_control")
 }
 
 class MainActivity : ComponentActivity() {
@@ -272,15 +273,30 @@ class MainActivity : ComponentActivity() {
                         currentSessionId = currentSessionId,
                         messages = messagesState.value,
                         isGenerating = isGenerating,
+                        isServerRunning = webServer != null,
                         onTriggerFilePicker = { filePickerLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
                         onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                         onNewChat = { createNewSession() },
                         onSelectSession = { currentSessionId = it },
                         onSendPrompt = { prompt -> runInference(prompt) },
-                        onModelPathReady = { path -> autoLoadStoredModel(path) }
+                        onModelPathReady = { path -> autoLoadStoredModel(path) },
+                        onServerToggled = { enable -> toggleServer(enable) }
                     )
                 }
             }
+        }
+    }
+
+    private fun toggleServer(enable: Boolean) {
+        if (enable) {
+            if (webServer == null) {
+                try {
+                    webServer = BrowserAccessServer(8080).apply { start() }
+                } catch (_: Exception) {}
+            }
+        } else {
+            webServer?.stop()
+            webServer = null
         }
     }
 
@@ -444,12 +460,14 @@ fun AppRootNavigation(
     currentSessionId: Long?,
     messages: List<ChatMessage>,
     isGenerating: Boolean,
+    isServerRunning: Boolean,
     onTriggerFilePicker: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
     onSendPrompt: (String) -> Unit,
-    onModelPathReady: (String) -> Unit
+    onModelPathReady: (String) -> Unit,
+    onServerToggled: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val navController = rememberNavController()
@@ -492,6 +510,7 @@ fun AppRootNavigation(
                 isGenerating = isGenerating,
                 onNavigateToModelManager = { navController.navigate(AppScreen.ModelManager.route) },
                 onNavigateToUpdate = { navController.navigate(AppScreen.UpdateScreen.route) },
+                onNavigateToServerControl = { navController.navigate(AppScreen.ServerControl.route) },
                 onOpenSettings = onOpenSettings,
                 onNewChat = onNewChat,
                 onSelectSession = onSelectSession,
@@ -521,6 +540,100 @@ fun AppRootNavigation(
             UpdateScreen(
                 onBackClicked = { navController.popBackStack() }
             )
+        }
+        composable(AppScreen.ServerControl.route) {
+            ServerControlScreen(
+                isServerRunning = isServerRunning,
+                onServerToggled = onServerToggled,
+                onBackClicked = { navController.popBackStack() }
+            )
+        }
+    }
+}
+
+// --- Dedicated Server Control Screen ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ServerControlScreen(
+    isServerRunning: Boolean,
+    onServerToggled: (Boolean) -> Unit,
+    onBackClicked: () -> Unit
+) {
+    var isRunning by remember { mutableStateOf(isServerRunning) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Browser Access Server") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClicked) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "HTTP Gateway Status",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isRunning) "Status: Running on Port 8080" else "Status: Stopped",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Enable Web Server",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Allows local network browser access.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = isRunning,
+                        onCheckedChange = { newState ->
+                            isRunning = newState
+                            onServerToggled(newState)
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -1211,6 +1324,7 @@ fun MainScreen(
     isGenerating: Boolean,
     onNavigateToModelManager: () -> Unit,
     onNavigateToUpdate: () -> Unit,
+    onNavigateToServerControl: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onSelectSession: (Long) -> Unit,
@@ -1264,6 +1378,9 @@ fun MainScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = onNavigateToServerControl) {
+                            Icon(Icons.Default.Dns, contentDescription = "Server Control")
+                        }
                         IconButton(onClick = onNavigateToUpdate) {
                             Icon(Icons.Default.SystemUpdate, contentDescription = "Updates")
                         }

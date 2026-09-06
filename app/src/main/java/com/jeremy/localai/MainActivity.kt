@@ -38,6 +38,7 @@ import com.jeremy.localai.db.ChatSession
 import com.jeremy.localai.engine.AiEngine
 import com.jeremy.localai.engine.EngineOptions
 import com.jeremy.localai.engine.LiteRtEngine
+import com.jeremy.localai.engine.BrowserAccessServer
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -192,6 +193,7 @@ class MainActivity : ComponentActivity() {
     private var currentEngine: AiEngine? = null
     private var modelPath: String? = null
     private val database by lazy { AppDatabase.getDatabase(this) }
+    private var webServer: BrowserAccessServer? = null
 
     private var statusText by mutableStateOf("Status: Model Unloaded")
     private var isGenerating by mutableStateOf(false)
@@ -211,6 +213,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        try {
+            webServer = BrowserAccessServer(8080).apply { start() }
+        } catch (_: Exception) {}
 
         // Run Root Check on Startup via libsu
         lifecycleScope.launch(Dispatchers.IO) {
@@ -425,6 +431,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        webServer?.stop()
         try { currentEngine?.close() } catch (_: Exception) {}
     }
 }
@@ -588,7 +595,6 @@ fun UpdateScreen(onBackClicked: () -> Unit) {
                                     val bodyStr = response.body?.string() ?: ""
                                     val json = JSONObject(bodyStr)
                                     
-                                    // Auto-detect version and download link fields flexibly
                                     remoteVersion = json.optString("versionName", json.optString("version", "1.0.0"))
                                     apkUrl = json.optString("downloadUrl", json.optString("apk", json.optString("zipUrl", "")))
                                     

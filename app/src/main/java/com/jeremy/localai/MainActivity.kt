@@ -127,14 +127,14 @@ object ModelDownloader {
                 return@flow
             }
 
-            RandomAccessFile(destinationFile, "rw").use<RandomAccessFile, Unit> { raf ->
+            RandomAccessFile(destinationFile, "rw").use { raf ->
                 if (response.code == 206) {
                     raf.seek(downloadedBytes)
                 } else {
                     raf.setLength(0)
                 }
 
-                body?.byteStream()?.use<InputStream, Unit> { inputStream ->
+                body?.byteStream()?.use { inputStream ->
                     val buffer = ByteArray(16 * 1024)
                     var bytesRead: Int
                     
@@ -191,17 +191,19 @@ object HuggingFaceHub {
         val results = mutableListOf<HuggingFaceModelItem>()
 
         try {
-            client.newCall(request).execute().use<okhttp3.Response, Unit> { response ->
-                if (!response.isSuccessful) return@withContext
-                val responseBody = response.body?.string() ?: return@withContext
-                val jsonArray = JSONArray(responseBody)
-
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val modelId = obj.getString("id")
-                    val downloads = obj.optInt("downloads", 0)
-                    val directUrl = "https://huggingface.co/$modelId/resolve/main/model.gguf"
-                    results.add(HuggingFaceModelItem(modelId, downloads, directUrl))
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val responseBody = response.body?.string()
+                    if (responseBody != null) {
+                        val jsonArray = JSONArray(responseBody)
+                        for (i in 0 until jsonArray.length()) {
+                            val obj = jsonArray.getJSONObject(i)
+                            val modelId = obj.getString("id")
+                            val downloads = obj.optInt("downloads", 0)
+                            val directUrl = "https://huggingface.co/$modelId/resolve/main/model.gguf"
+                            results.add(HuggingFaceModelItem(modelId, downloads, directUrl))
+                        }
+                    }
                 }
             }
         } catch (_: Exception) {}
@@ -422,8 +424,8 @@ class MainActivity : ComponentActivity() {
                 val fileName = if (isLiteRt) "imported_model.litertlm" else "imported_model.gguf"
                 val destinationFile = File(modelsDir, fileName)
                 
-                contentResolver.openInputStream(uri)?.use<InputStream, Unit> { input ->
-                    FileOutputStream(destinationFile).use<FileOutputStream, Unit> { output -> 
+                contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destinationFile).use { output -> 
                         input.copyTo(output) 
                     }
                 }
@@ -767,7 +769,7 @@ fun UpdateScreen(onBackClicked: () -> Unit) {
                                 .url("https://raw.githubusercontent.com/jch0029987-glitch/local-ai/main/update.json")
                                 .build()
                             
-                            client.newCall(request).execute().use<okhttp3.Response, Unit> { response ->
+                            client.newCall(request).execute().use { response ->
                                 if (response.isSuccessful) {
                                     val bodyStr = response.body?.string() ?: ""
                                     val json = JSONObject(bodyStr)
@@ -828,8 +830,8 @@ fun UpdateScreen(onBackClicked: () -> Unit) {
                                             val buffer = ByteArray(8192)
                                             var downloaded = 0L
 
-                                            body.byteStream().use<InputStream, Unit> { input ->
-                                                FileOutputStream(apkFile).use<FileOutputStream, Unit> { output ->
+                                            body.byteStream().use { input ->
+                                                FileOutputStream(apkFile).use { output ->
                                                     var bytesRead: Int
                                                     while (input.read(buffer).also { bytesRead = it } != -1) {
                                                         output.write(buffer, 0, bytesRead)

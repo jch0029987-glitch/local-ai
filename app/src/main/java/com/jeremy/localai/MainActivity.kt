@@ -54,6 +54,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.codeshipping.llamakotlin.LlamaException
 import org.codeshipping.llamakotlin.LlamaModel
 import org.json.JSONArray
 import org.json.JSONObject
@@ -371,9 +372,28 @@ class MainActivity : ComponentActivity() {
 
     private fun autoLoadStoredModel(path: String) {
         modelPath = path
-        statusText = "Status: Loading stored model from /sdcard/models..."
+        statusText = "Status: Inspecting file at $path..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
+                val file = File(path)
+                val exists = file.exists()
+                val length = if (exists) file.length() else 0L
+
+                withContext(Dispatchers.Main) {
+                    statusText = "Status: File exists=$exists, size=${length / (1024 * 1024)}MB"
+                }
+
+                if (!exists || length < 1024 * 1024) {
+                    withContext(Dispatchers.Main) {
+                        statusText = "Status: Error - File missing or too small ($length bytes)"
+                    }
+                    return@launch
+                }
+
+                withContext(Dispatchers.Main) {
+                    statusText = "Status: Initializing LlamaModel.load() JNI..."
+                }
+
                 val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
                 val options = EngineOptions(
                     threads = prefs.getInt("threads", 4),
@@ -401,9 +421,30 @@ class MainActivity : ComponentActivity() {
                 val ggufEngine = GgufEngineWrapper()
                 ggufEngine.loadModel(path, options)
                 currentEngine = ggufEngine
-                withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: GGUF Model Loaded Successfully" 
+                }
+            } catch (e: LlamaException.ModelNotFound) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: JNI Error [ModelNotFound] - Path unreadable or missing" 
+                }
+            } catch (e: LlamaException.ModelLoadError) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: JNI Error [ModelLoadError] - Corrupt GGUF or RAM OOM" 
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: Native Crash - UnsatisfiedLinkError (ABI mismatch)" 
+                }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { statusText = "Status: Auto-load failed (${e.localizedMessage})" }
+                e.printStackTrace()
+                val errorDetails = "${e.javaClass.simpleName}: ${e.localizedMessage ?: "Unknown"}"
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: Crash -> $errorDetails" 
+                }
             }
         }
     }
@@ -469,9 +510,26 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
                 }
 
+            } catch (e: LlamaException.ModelNotFound) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: JNI Error [ModelNotFound] - Path unreadable or missing" 
+                }
+            } catch (e: LlamaException.ModelLoadError) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: JNI Error [ModelLoadError] - Corrupt GGUF or RAM OOM" 
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) { 
+                    statusText = "Status: Native Crash - UnsatisfiedLinkError (ABI mismatch)" 
+                }
             } catch (e: Exception) {
+                e.printStackTrace()
+                val errorDetails = "${e.javaClass.simpleName}: ${e.localizedMessage ?: "Unknown"}"
                 withContext(Dispatchers.Main) {
-                    statusText = "Load failed: ${e.localizedMessage}"
+                    statusText = "Load failed -> $errorDetails"
                 }
             }
         }

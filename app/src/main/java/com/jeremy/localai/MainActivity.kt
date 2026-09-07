@@ -64,6 +64,9 @@ import java.io.RandomAccessFile
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
 import io.github.ljcamargo.llamacpp.LlamaHelper
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+
 
 // --- Background Model Downloader Utility & State ---
 sealed class DownloadState {

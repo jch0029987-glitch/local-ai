@@ -128,6 +128,9 @@ dependencies {
     
     // Google AI Edge LiteRT Core & CompiledModel Runtime
     implementation("com.google.ai.edge.litert:litert:2.2.0")
+    // Upgraded modern GGUF engine wrapper
+    implementation("io.github.ljcamargo:llamacpp-kotlin:0.4.0")
+
 
     // LiteRT-LM (Language Model runtime for .litertlm / generative tasks)
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")

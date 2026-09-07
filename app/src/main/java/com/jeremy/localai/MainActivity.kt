@@ -64,7 +64,8 @@ import java.io.InputStream
 import java.io.RandomAccessFile
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
-
+import org.codeshipping.llamakotlin.LlamaException
+import org.codeshipping.llamakotlin.LlamaModel
 // --- Background Model Downloader Utility & State ---
 sealed class DownloadState {
     data class Progress(val progressBytes: Long, val totalBytes: Long, val percent: Float) : DownloadState()

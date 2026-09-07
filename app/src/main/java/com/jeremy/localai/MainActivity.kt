@@ -58,6 +58,8 @@ import org.codeshipping.llamakotlin.LlamaModel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.io.RandomAccessFile
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
@@ -125,14 +127,14 @@ object ModelDownloader {
                 return@flow
             }
 
-            RandomAccessFile(destinationFile, "rw").use { raf ->
+            RandomAccessFile(destinationFile, "rw").use<RandomAccessFile, Unit> { raf ->
                 if (response.code == 206) {
                     raf.seek(downloadedBytes)
                 } else {
                     raf.setLength(0)
                 }
 
-                body?.byteStream()?.use { inputStream ->
+                body?.byteStream()?.use<InputStream, Unit> { inputStream ->
                     val buffer = ByteArray(16 * 1024)
                     var bytesRead: Int
                     
@@ -189,9 +191,9 @@ object HuggingFaceHub {
         val results = mutableListOf<HuggingFaceModelItem>()
 
         try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext emptyList()
-                val responseBody = response.body?.string() ?: return@withContext emptyList()
+            client.newCall(request).execute().use<okhttp3.Response, Unit> { response ->
+                if (!response.isSuccessful) return@withContext
+                val responseBody = response.body?.string() ?: return@withContext
                 val jsonArray = JSONArray(responseBody)
 
                 for (i in 0 until jsonArray.length()) {
@@ -261,7 +263,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Check for Android 11+ All Files Access Permission (/sdcard/models support)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
@@ -277,7 +278,6 @@ class MainActivity : ComponentActivity() {
             webServer = BrowserAccessServer(8080).apply { start() }
         } catch (_: Exception) {}
 
-        // Run Root Check on Startup via libsu
         lifecycleScope.launch(Dispatchers.IO) {
             val hasRoot = Shell.getShell().isRoot
             withContext(Dispatchers.Main) {
@@ -296,7 +296,6 @@ class MainActivity : ComponentActivity() {
             autoLoadStoredModel(defaultModelFile.absolutePath)
         }
 
-        // Load sessions list reactively from Room
         lifecycleScope.launch(Dispatchers.IO) {
             database.chatDao().getAllSessions().collectLatest { sessions ->
                 sessionsState.value = sessions
@@ -309,7 +308,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Load messages for current session dynamically from Room
         lifecycleScope.launch(Dispatchers.IO) {
             snapshotFlow { currentSessionId }.collectLatest { sessionId ->
                 if (sessionId != null) {
@@ -424,8 +422,10 @@ class MainActivity : ComponentActivity() {
                 val fileName = if (isLiteRt) "imported_model.litertlm" else "imported_model.gguf"
                 val destinationFile = File(modelsDir, fileName)
                 
-                contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(destinationFile).use { output -> input.copyTo(output) }
+                contentResolver.openInputStream(uri)?.use<InputStream, Unit> { input ->
+                    FileOutputStream(destinationFile).use<FileOutputStream, Unit> { output -> 
+                        input.copyTo(output) 
+                    }
                 }
                 modelPath = destinationFile.absolutePath
 
@@ -767,7 +767,7 @@ fun UpdateScreen(onBackClicked: () -> Unit) {
                                 .url("https://raw.githubusercontent.com/jch0029987-glitch/local-ai/main/update.json")
                                 .build()
                             
-                            client.newCall(request).execute().use { response ->
+                            client.newCall(request).execute().use<okhttp3.Response, Unit> { response ->
                                 if (response.isSuccessful) {
                                     val bodyStr = response.body?.string() ?: ""
                                     val json = JSONObject(bodyStr)
@@ -825,11 +825,11 @@ fun UpdateScreen(onBackClicked: () -> Unit) {
                                         if (body != null) {
                                             val apkFile = File(context.getExternalFilesDir(null), "update.apk")
                                             val totalBytes = body.contentLength()
+                                            val buffer = ByteArray(8192)
                                             var downloaded = 0L
 
-                                            body.byteStream().use { input ->
-                                                FileOutputStream(apkFile).use { output ->
-                                                    val buffer = ByteArray(8192)
+                                            body.byteStream().use<InputStream, Unit> { input ->
+                                                FileOutputStream(apkFile).use<FileOutputStream, Unit> { output ->
                                                     var bytesRead: Int
                                                     while (input.read(buffer).also { bytesRead = it } != -1) {
                                                         output.write(buffer, 0, bytesRead)

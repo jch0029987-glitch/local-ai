@@ -3,7 +3,10 @@ package com.jeremy.localai
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,7 +58,6 @@ import org.codeshipping.llamakotlin.LlamaModel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
@@ -78,7 +80,11 @@ object ModelDownloader {
         .build()
 
     fun downloadModel(context: Context, urlString: String, fileName: String): Flow<DownloadState> = flow {
-        val destinationFile = File(context.filesDir, fileName)
+        val modelsDir = File(Environment.getExternalStorageDirectory(), "models")
+        if (!modelsDir.exists()) {
+            modelsDir.mkdirs()
+        }
+        val destinationFile = File(modelsDir, fileName)
         var downloadedBytes = if (destinationFile.exists()) destinationFile.length() else 0L
 
         emit(DownloadState.Progress(downloadedBytes, 0, 0f))
@@ -255,6 +261,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Check for Android 11+ All Files Access Permission (/sdcard/models support)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {}
+            }
+        }
+
         try {
             webServer = BrowserAccessServer(8080).apply { start() }
         } catch (_: Exception) {}
@@ -271,7 +289,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val defaultModelFile = File(filesDir, "imported_model.gguf")
+        val modelsDir = File(Environment.getExternalStorageDirectory(), "models")
+        val defaultModelFile = File(modelsDir, "imported_model.gguf")
         if (defaultModelFile.exists() && modelPath == null) {
             modelPath = defaultModelFile.absolutePath
             autoLoadStoredModel(defaultModelFile.absolutePath)
@@ -352,7 +371,7 @@ class MainActivity : ComponentActivity() {
 
     private fun autoLoadStoredModel(path: String) {
         modelPath = path
-        statusText = "Status: Loading stored model..."
+        statusText = "Status: Loading stored model from /sdcard/models..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val prefs = getSharedPreferences("ai_settings", MODE_PRIVATE)
@@ -383,22 +402,27 @@ class MainActivity : ComponentActivity() {
                 ggufEngine.loadModel(path, options)
                 currentEngine = ggufEngine
                 withContext(Dispatchers.Main) { statusText = "Status: GGUF Model Ready" }
-            } catch (_: Exception) {
-                withContext(Dispatchers.Main) { statusText = "Status: Auto-load failed" }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { statusText = "Status: Auto-load failed (${e.localizedMessage})" }
             }
         }
     }
 
     private fun importModelFile(uri: Uri) {
-        statusText = "Importing model file..."
+        statusText = "Importing model file to /sdcard/models..."
         lifecycleScope.launch(Dispatchers.IO) {
             try {
+                val modelsDir = File(Environment.getExternalStorageDirectory(), "models")
+                if (!modelsDir.exists()) {
+                    modelsDir.mkdirs()
+                }
+
                 val pathString = uri.toString()
                 val isLiteRt = pathString.endsWith(".litertlm", ignoreCase = true) || 
                                pathString.endsWith(".tflite", ignoreCase = true)
                 
                 val fileName = if (isLiteRt) "imported_model.litertlm" else "imported_model.gguf"
-                val destinationFile = File(filesDir, fileName)
+                val destinationFile = File(modelsDir, fileName)
                 
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(destinationFile).use { output -> input.copyTo(output) }
@@ -568,7 +592,7 @@ fun AppRootNavigation(
         composable(AppScreen.ModelDownloaderHub.route) {
             ModelDownloadScreen(
                 titleText = "Hugging Face Model Hub",
-                subtitleText = "Search and download GGUF models directly from live repositories.",
+                subtitleText = "Search and download GGUF models directly to /sdcard/models.",
                 onDownloadComplete = { savedPath ->
                     onModelPathReady(savedPath)
                     navController.popBackStack()
@@ -915,7 +939,7 @@ fun ModelManagerScreen(
             ) {
                 Icon(Icons.Default.CloudDownload, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(text = "Download Model from Cloud Hub", style = MaterialTheme.typography.titleMedium)
+                Text(text = "Download Model to /sdcard/models", style = MaterialTheme.typography.titleMedium)
             }
 
             OutlinedButton(
@@ -938,7 +962,7 @@ fun ModelManagerScreen(
 @Composable
 fun ModelDownloadScreen(
     titleText: String = "Hugging Face Model Hub",
-    subtitleText: String = "Search and download GGUF models directly from live repositories.",
+    subtitleText: String = "Search and download GGUF models directly to /sdcard/models.",
     onDownloadComplete: (String) -> Unit,
     onBackClicked: (() -> Unit)? = null
 ) {
@@ -1027,7 +1051,7 @@ fun ModelDownloadScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Downloading: ${selectedModel?.modelId ?: "Model"}",
+                            text = "Downloading to /sdcard/models: ${selectedModel?.modelId ?: "Model"}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )

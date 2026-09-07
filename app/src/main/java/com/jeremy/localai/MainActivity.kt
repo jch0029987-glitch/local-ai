@@ -64,7 +64,6 @@ import java.io.RandomAccessFile
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
 import io.github.ljcamargo.llamacpp.LlamaHelper
-import com.topjohnwu.superuser.Shell
 
 // --- Background Model Downloader Utility & State ---
 sealed class DownloadState {

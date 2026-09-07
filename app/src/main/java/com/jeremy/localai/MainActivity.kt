@@ -1,4 +1,4 @@
-package com.jeremy.localai
+Package com.jeremy.localai
 
 import android.content.Context
 import android.content.Intent
@@ -425,7 +425,7 @@ class MainActivity : ComponentActivity() {
                             when (event) {
                                 is LlamaHelper.LLMEvent.Ongoing -> emit(event.word)
                                 is LlamaHelper.LLMEvent.Done -> {}
-                                is LlamaHelper.LLMEvent.Error -> throw RuntimeException(event.message)
+                                is LlamaHelper.LLMEvent.Error -> throw RuntimeException(event.error)
                                 else -> {}
                             }
                         }

@@ -46,6 +46,8 @@ import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.BufferOverflow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -399,26 +401,41 @@ class MainActivity : ComponentActivity() {
                     temperature = prefs.getFloat("temperature", 0.7f)
                 )
 
+                try { currentEngine?.close() } catch (_: Exception) {}
+
+                val eventFlow = MutableSharedFlow<LlamaHelper.LLMEvent>(
+                    extraBufferCapacity = 64,
+                    onBufferOverflow = BufferOverflow.DROP_OLDEST
+                )
+
                 class LlamaCppEngineWrapper : AiEngine {
                     private var helper: LlamaHelper? = null
                     
                     override suspend fun loadModel(path: String, options: EngineOptions) {
-                        helper = LlamaHelper(contentResolver, lifecycleScope, kotlinx.coroutines.flow.MutableSharedFlow()).apply {
-                            // Configure settings based on options if needed
-                        }
+                        helper = LlamaHelper(contentResolver, lifecycleScope, eventFlow)
+                        helper?.load(
+                            path = Uri.fromFile(File(path)),
+                            contextLength = options.contextSize
+                        ) { _ -> }
                     }
                     
-                    override fun generateStream(prompt: String) = flow {
-                        // Implement using llamaHelper token streams or standard evaluation
-                        emit("")
+                    override fun generateStream(prompt: String): Flow<String> = flow {
+                        helper?.predict(prompt)
+                        eventFlow.collect { event ->
+                            when (event) {
+                                is LlamaHelper.LLMEvent.Ongoing -> emit(event.word)
+                                is LlamaHelper.LLMEvent.Done -> {}
+                                is LlamaHelper.LLMEvent.Error -> throw RuntimeException(event.message)
+                                else -> {}
+                            }
+                        }
                     }
                     
                     override fun close() {
                         helper?.close()
+                        helper = null
                     }
                 }
-
-                try { currentEngine?.close() } catch (_: Exception) {}
 
                 val engineWrapper = LlamaCppEngineWrapper()
                 engineWrapper.loadModel(path, options)

@@ -47,7 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.BufferOverflow
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -64,9 +64,7 @@ import java.io.RandomAccessFile
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
 import io.github.ljcamargo.llamacpp.LlamaHelper
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import com.rnllama.LlamaContext
+import com.topjohnwu.superuser.Shell
 
 // --- Background Model Downloader Utility & State ---
 sealed class DownloadState {

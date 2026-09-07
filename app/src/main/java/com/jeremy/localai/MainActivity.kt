@@ -66,7 +66,7 @@ import java.util.concurrent.TimeUnit
 import io.github.ljcamargo.llamacpp.LlamaHelper
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
-
+import com.rnllama.LlamaContext
 
 // --- Background Model Downloader Utility & State ---
 sealed class DownloadState {

@@ -123,25 +123,23 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
 
-    // Local GGUF Native Inference Wrapper
-    implementation("org.codeshipping:llama-kotlin-android:0.1.0")
+    // GGUF Engine Wrapper
+    implementation("io.github.ljcamargo:llamacpp-kotlin:0.4.0")
     
     // Google AI Edge LiteRT Core & CompiledModel Runtime
     implementation("com.google.ai.edge.litert:litert:2.2.0")
-    // Upgraded modern GGUF engine wrapper
-    implementation("io.github.ljcamargo:llamacpp-kotlin:0.4.0")
 
-
-    // LiteRT-LM (Language Model runtime for .litertlm / generative tasks)
+    // LiteRT-LM (Google's Generative Language Model runtime)
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // Core shell component
-    implementation("com.github.topjohnwu.libsu:core:6.0.0")
     
-    // Optional: If you plan to use root services / IPC
+    // Root shell component & services
+    implementation("com.github.topjohnwu.libsu:core:6.0.0")
     implementation("com.github.topjohnwu.libsu:service:6.0.0")
+    
     implementation("io.ktor:ktor-server-core:3.5.2")
     implementation("io.ktor:ktor-server-netty:3.5.2")
 }
